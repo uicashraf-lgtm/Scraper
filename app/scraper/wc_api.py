@@ -378,7 +378,10 @@ def process_wc_store_product(product: dict, base_url: str | None = None) -> dict
             price = min(all_prices)
             price_max = max(all_prices)
 
-        # Build structured variants using attributes from list endpoint + fetched prices
+        # Build structured variants using attributes from list endpoint + fetched prices.
+        # Also backfill variant_amounts from raw_variations in case attributes[].terms[]
+        # on the list endpoint only returned the default/selected term (a common WC behaviour
+        # where the full term list is only available on the single-product endpoint).
         for var in raw_variations:
             vid = var.get("id")
             var_price = var_price_map.get(vid)
@@ -386,6 +389,8 @@ def process_wc_store_product(product: dict, base_url: str | None = None) -> dict
                 if _IS_AMOUNT_ATTR(attr.get("name", "")):
                     label = str(attr.get("value", "")).strip()
                     if label:
+                        if label not in variant_amounts:
+                            variant_amounts.append(label)
                         dosage_val, dosage_unit = _parse_amount(label)
                         if dosage_val is not None:
                             variants.append({
