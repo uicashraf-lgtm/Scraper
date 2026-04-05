@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 _AMOUNT_RE = re.compile(r'\d+(?:\.\d+)?\s*(?:mg|mcg|ug|g|iu|ml)\b', re.IGNORECASE)
 _IS_AMOUNT_ATTR = lambda name: any(
-    k in name.lower() for k in ("mg", "weight", "dose", "dosage", "size", "amount", "strength")
+    k in name.lower() for k in ("mg", "weight", "dose", "dosage", "size", "amount", "variant", "strength")
 )
 
 
