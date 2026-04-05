@@ -41,11 +41,13 @@ def _extract_variant_amounts(soup: BeautifulSoup) -> list[str]:
     """
     Extract available dosage/weight variant labels from WooCommerce variable product pages.
 
-    Two sources:
-      1. data-product_variations JSON on the <form> — authoritative, includes prices
-      2. ul[data-attribute_name] elements — simpler, just the label values
+    Sources (in priority order):
+      1. data-product_variations JSON on the <form> — classic template, authoritative
+      2. ul[data-attribute_name] elements — classic template, simpler
+      3. WooCommerce attributes table (shop_attributes) — works on Gutenberg block pages
+      4. Variation <select> elements — Gutenberg/non-standard variable products
     """
-    # Source 1: full variations JSON
+    # Source 1: full variations JSON (classic template)
     form = soup.select_one("form.variations_form[data-product_variations]")
     if form:
         try:
@@ -60,7 +62,7 @@ def _extract_variant_amounts(soup: BeautifulSoup) -> list[str]:
         except Exception:
             pass
 
-    # Source 2: attribute selector ULs
+    # Source 2: attribute selector ULs (classic template)
     amounts = []
     for ul in soup.select("ul[data-attribute_name]"):
         attr_name = ul.get("data-attribute_name", "").lower()
@@ -78,6 +80,38 @@ def _extract_variant_amounts(soup: BeautifulSoup) -> list[str]:
                 txt = li.get_text(" ", strip=True)
                 if txt:
                     amounts.extend(_split_dosage_label(txt))
+    if amounts:
+        return list(dict.fromkeys(amounts))
+
+    # Source 3: WooCommerce attributes table — rendered on both classic and Gutenberg pages.
+    # Covers simple products where the dose is a product attribute (e.g. Size: 10mg).
+    for row in soup.select(
+        "table.shop_attributes tr, "
+        ".woocommerce-product-attributes tr, "
+        "table.woocommerce-product-attributes tr"
+    ):
+        th = row.select_one("th")
+        td = row.select_one("td")
+        if not (th and td):
+            continue
+        label = th.get_text(" ", strip=True)
+        if not _is_amount_attr(label):
+            continue
+        value = td.get_text(" ", strip=True)
+        if value:
+            amounts.extend(_split_dosage_label(value))
+    if amounts:
+        return list(dict.fromkeys(amounts))
+
+    # Source 4: variation <select> elements — Gutenberg/non-standard variable products.
+    for sel in soup.select("select[name^='attribute_'], select[id^='pa_']"):
+        attr_name = (sel.get("name") or sel.get("id") or "").lower()
+        if not _is_amount_attr(attr_name):
+            continue
+        for opt in sel.select("option"):
+            val = (opt.get("value") or opt.get_text(" ", strip=True)).strip()
+            if val and val.lower() not in ("", "choose an option", "select"):
+                amounts.extend(_split_dosage_label(val))
     return list(dict.fromkeys(amounts))
 
 
