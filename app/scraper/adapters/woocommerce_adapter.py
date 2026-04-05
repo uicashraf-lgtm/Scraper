@@ -47,23 +47,23 @@ def _extract_variant_amounts(soup: BeautifulSoup) -> list[str]:
       3. WooCommerce attributes table (shop_attributes) — works on Gutenberg block pages
       4. Variation <select> elements — Gutenberg/non-standard variable products
     """
-    # Source 1: full variations JSON (classic template)
+    amounts: list[str] = []
+
+    # Source 1: data-product_variations JSON (classic WC variable product form).
+    # Note: no early return — the JSON can be truncated when WC uses AJAX loading
+    # (woocommerce_ajax_variation_threshold), so we always fall through to Sources 3/4.
     form = soup.select_one("form.variations_form[data-product_variations]")
     if form:
         try:
             variations = json.loads(form.get("data-product_variations", "[]"))
-            amounts: list[str] = []
             for var in variations:
                 for key, val in (var.get("attributes") or {}).items():
                     if val and _is_amount_attr(key):
                         amounts.extend(_split_dosage_label(str(val).strip()))
-            if amounts:
-                return list(dict.fromkeys(amounts))  # deduplicated, order preserved
         except Exception:
             pass
 
-    # Source 2: attribute selector ULs (classic template)
-    amounts = []
+    # Source 2: attribute selector ULs (classic WC swatches)
     for ul in soup.select("ul[data-attribute_name]"):
         attr_name = ul.get("data-attribute_name", "").lower()
         if not _is_amount_attr(attr_name):
@@ -75,13 +75,10 @@ def _extract_variant_amounts(soup: BeautifulSoup) -> list[str]:
                 if v:
                     amounts.extend(_split_dosage_label(str(v).strip()))
         except Exception:
-            # Fall back to reading child <li> text
             for li in ul.select("li"):
                 txt = li.get_text(" ", strip=True)
                 if txt:
                     amounts.extend(_split_dosage_label(txt))
-    if amounts:
-        return list(dict.fromkeys(amounts))
 
     # Source 3: WooCommerce attributes table — rendered on both classic and Gutenberg pages.
     # Covers simple products where the dose is a product attribute (e.g. Size: 10mg).
@@ -184,14 +181,19 @@ class WooCommerceAdapter:
 
         # 1. Variable product: parse data-product_variations JSON for min price + amounts
         min_price, max_price, variant_amounts, variants = _extract_variations_prices(soup)
+
+        # Always supplement variant_amounts from HTML elements.  The form JSON can be
+        # truncated when WC uses AJAX loading (woocommerce_ajax_variation_threshold), and
+        # Gutenberg block pages won't have the form at all — the <select> elements and
+        # attributes table are the reliable source in both cases.
+        for lbl in _extract_variant_amounts(soup):
+            if lbl not in variant_amounts:
+                variant_amounts.append(lbl)
+
         if min_price is not None:
             return AdapterResult(True, name, min_price, "USD", None,
                                  variant_amounts=variant_amounts, variants=variants,
                                  price_max=max_price, category=category, tags=tags)
-
-        # 2. Collect variant amounts even if no variations JSON
-        if not variant_amounts:
-            variant_amounts = _extract_variant_amounts(soup)
 
         # 3. Standard simple-product price selectors
         price_text = read_text(soup, [
