@@ -19,9 +19,18 @@ _DOSAGE_SPLIT = re.compile(r'\d+(?:\.\d+)?\s*(?:mg|mcg|ug|g|iu|ml)\b', re.IGNORE
 
 
 def _split_dosage_label(label: str) -> list[str]:
-    """Split concatenated strings like '5 MG 10 MG' → ['5 MG', '10 MG']."""
+    """Split concatenated strings like '5 MG 10 MG' → ['5 MG', '10 MG'].
+
+    When there is exactly one dosage match return just the matched portion,
+    not the whole label — so '10 mg single vial' → ['10 mg'] rather than
+    the whole string (which would later normalise to '10 mgsinglevial').
+    """
     matches = _DOSAGE_SPLIT.findall(label)
-    return [m.strip() for m in matches] if len(matches) > 1 else [label]
+    if len(matches) > 1:
+        return [m.strip() for m in matches]
+    if len(matches) == 1:
+        return [matches[0].strip()]
+    return [label]  # no dosage found — return as-is
 
 
 def _product_name(soup: BeautifulSoup) -> str | None:
