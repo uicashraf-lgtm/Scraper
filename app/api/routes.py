@@ -717,7 +717,12 @@ def list_all_products(db: Session = Depends(get_db)):
 
     def _split_dosage(label: str) -> list:
         matches = _DOSAGE_SPLIT_RE.findall(label)
-        return [_normalize_dosage(m) for m in matches] if len(matches) > 1 else [_normalize_dosage(label)]
+        # When ≥1 dosage token found, normalise each token (not the whole label).
+        # This prevents "10 mg single vial" → "10 mgsinglevial" when the full
+        # label is passed through _normalize_dosage wholesale.
+        if matches:
+            return [_normalize_dosage(m) for m in matches]
+        return [_normalize_dosage(label)]
 
     def _dosage_sort_key(d: str) -> float:
         m = _re.search(r"(\d+(?:\.\d+)?)", d)
