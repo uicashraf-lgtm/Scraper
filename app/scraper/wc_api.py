@@ -16,14 +16,34 @@ from app.scraper.rate_limiter import http_get_with_retry, page_delay
 logger = logging.getLogger(__name__)
 
 _AMOUNT_RE = re.compile(r'\d+(?:\.\d+)?\s*(?:mg|mcg|ug|g|iu|ml)\b', re.IGNORECASE)
+_SLUG_HYPHEN_RE = re.compile(r'(\d)-([a-zA-Z])')
 _IS_AMOUNT_ATTR = lambda name: any(
     k in name.lower() for k in ("mg", "weight", "dose", "dosage", "size", "amount", "variant", "strength")
 )
 
 
+def _clean_dosage_label(label: str) -> str:
+    """Normalise WooCommerce slug-format dosage labels to canonical form.
+
+    WC variation attribute *values* from the Store API are often URL slugs
+    (e.g. "10-mg", "5-mcg") rather than display labels ("10mg", "5mcg").
+    Strip the slug hyphen so downstream parsing works correctly.
+
+    Examples:
+        "10-mg"  → "10mg"
+        "5-MG"   → "5mg"
+        "25-mcg" → "25mcg"
+        "10mg"   → "10mg"   (unchanged)
+        "10 mg"  → "10 mg"  (unchanged — space is fine)
+    """
+    s = _SLUG_HYPHEN_RE.sub(r'\1\2', label.strip())
+    return s
+
+
 def _parse_amount(text: str) -> tuple[float | None, str | None]:
-    """Parse '10 mg' → (10.0, 'mg'). Returns (None, None) if no match."""
-    m = _AMOUNT_RE.search(text or "")
+    """Parse '10 mg' or '10-mg' → (10.0, 'mg'). Returns (None, None) if no match."""
+    cleaned = _clean_dosage_label(text or "")
+    m = _AMOUNT_RE.search(cleaned)
     if not m:
         return None, None
     num = re.search(r'\d+(?:\.\d+)?', m.group())
@@ -363,7 +383,7 @@ def process_wc_store_product(product: dict, base_url: str | None = None) -> dict
         for attr in (product.get("attributes") or []):
             if attr.get("has_variations") and _IS_AMOUNT_ATTR(attr.get("name", "")):
                 for term in (attr.get("terms") or []):
-                    label = str(term.get("name", "")).strip()
+                    label = _clean_dosage_label(str(term.get("name", "")).strip())
                     if label:
                         variant_amounts.append(label)
 
@@ -387,7 +407,9 @@ def process_wc_store_product(product: dict, base_url: str | None = None) -> dict
             var_price = var_price_map.get(vid)
             for attr in var.get("attributes", []):
                 if _IS_AMOUNT_ATTR(attr.get("name", "")):
-                    label = str(attr.get("value", "")).strip()
+                    # Store API variation values are often URL slugs ("10-mg");
+                    # clean them to canonical form ("10mg") before storing.
+                    label = _clean_dosage_label(str(attr.get("value", "")).strip())
                     if label:
                         if label not in variant_amounts:
                             variant_amounts.append(label)
