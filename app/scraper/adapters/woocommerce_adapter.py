@@ -106,7 +106,9 @@ def _extract_variant_amounts(soup: BeautifulSoup) -> list[str]:
         if not _is_amount_attr(attr_name):
             continue
         for opt in sel.select("option"):
-            val = (opt.get("value") or opt.get_text(" ", strip=True)).strip()
+            # Prefer display text over the value attribute: WC slugs use hyphens
+            # (e.g. value="10-mg") while the text is the canonical label ("10mg").
+            val = (opt.get_text(" ", strip=True) or opt.get("value") or "").strip()
             if val and val.lower() not in ("", "choose an option", "select"):
                 amounts.extend(_split_dosage_label(val))
     return list(dict.fromkeys(amounts))

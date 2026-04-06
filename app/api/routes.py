@@ -708,8 +708,10 @@ def list_all_products(db: Session = Depends(get_db)):
     _DOSAGE_SPLIT_RE = _re.compile(r'\d+(?:\.\d+)?\s*(?:mg|mcg|ug|g|iu|ml)\b', _re.IGNORECASE)
 
     def _normalize_dosage(label: str) -> str:
-        """Normalize '6 MG' / '6mg' / '6 mg' → '6 mg' (lowercase, single space)."""
+        """Normalize '6 MG' / '6mg' / '6 mg' / '6-mg' → '6 mg' (lowercase, single space)."""
         s = _re.sub(r'\s+', '', label).lower()
+        # Remove hyphen between digit and unit: WC slugs use "10-mg" → "10mg"
+        s = _re.sub(r'(\d)-([a-z])', r'\1\2', s)
         # Insert space between number and unit for display: "6mg" → "6 mg"
         return _re.sub(r'(\d)([a-z])', r'\1 \2', s)
 
