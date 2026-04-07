@@ -1184,6 +1184,12 @@ def patch_listing(listing_id: int, payload: ListingPatch, db: Session = Depends(
             listing.dose_locked = True
             if listing.last_price and payload.amount_mg > 0:
                 listing.price_per_mg = listing.last_price / payload.amount_mg
+            # Update variant_amounts so the frontend dosage grouping reflects the override
+            import json as _json
+            unit = (payload.amount_unit or listing.amount_unit or "mg").lower()
+            amt = payload.amount_mg
+            lbl = f"{int(amt)} {unit}" if amt == int(amt) else f"{amt} {unit}"
+            listing.variant_amounts = _json.dumps([lbl])
         if payload.amount_unit is not None:
             listing.amount_unit = payload.amount_unit
             listing.dose_locked = True
