@@ -67,7 +67,7 @@ def _extract_variant_amounts(soup: BeautifulSoup) -> list[str]:
             variations = json.loads(form.get("data-product_variations", "[]"))
             for var in variations:
                 for key, val in (var.get("attributes") or {}).items():
-                    if val and _is_amount_attr(key):
+                    if val and (_is_amount_attr(key) or _value_looks_like_dose(str(val))):
                         amounts.extend(_split_dosage_label(str(val).strip()))
         except Exception:
             pass
@@ -76,7 +76,14 @@ def _extract_variant_amounts(soup: BeautifulSoup) -> list[str]:
     for ul in soup.select("ul[data-attribute_name]"):
         attr_name = ul.get("data-attribute_name", "").lower()
         if not _is_amount_attr(attr_name):
-            continue
+            # Check if any value in this UL looks like a dose before skipping
+            raw = ul.get("data-attribute_values", "")
+            try:
+                vals = json.loads(raw) if raw else []
+                if not any(_value_looks_like_dose(str(v)) for v in vals if v):
+                    continue
+            except Exception:
+                continue
         raw = ul.get("data-attribute_values", "")
         try:
             vals = json.loads(raw) if raw else []
@@ -101,19 +108,29 @@ def _extract_variant_amounts(soup: BeautifulSoup) -> list[str]:
         if not (th and td):
             continue
         label = th.get_text(" ", strip=True)
-        if not _is_amount_attr(label):
-            continue
         value = td.get_text(" ", strip=True)
-        if value:
-            amounts.extend(_split_dosage_label(value))
+        if not value:
+            continue
+        if not _is_amount_attr(label) and not _value_looks_like_dose(value):
+            continue
+        amounts.extend(_split_dosage_label(value))
     if amounts:
         return list(dict.fromkeys(amounts))
 
     # Source 4: variation <select> elements — Gutenberg/non-standard variable products.
     for sel in soup.select("select[name^='attribute_'], select[id^='pa_']"):
         attr_name = (sel.get("name") or sel.get("id") or "").lower()
-        if not _is_amount_attr(attr_name):
-            continue
+        name_matches = _is_amount_attr(attr_name)
+        has_dose_option = False
+        if not name_matches:
+            # Check if any option value looks like a dose before skipping
+            for opt in sel.select("option"):
+                val = (opt.get_text(" ", strip=True) or opt.get("value") or "").strip()
+                if val and _value_looks_like_dose(val):
+                    has_dose_option = True
+                    break
+            if not has_dose_option:
+                continue
         for opt in sel.select("option"):
             # Prefer display text over the value attribute: WC slugs use hyphens
             # (e.g. value="10-mg") while the text is the canonical label ("10mg").
@@ -127,6 +144,11 @@ def _is_amount_attr(name: str) -> bool:
     """True if the attribute name likely represents a dosage/weight/size."""
     name = name.lower()
     return any(k in name for k in ("mg", "weight", "dose", "dosage", "size", "amount", "variant", "strength"))
+
+
+def _value_looks_like_dose(val: str) -> bool:
+    """True if the attribute *value* itself looks like a dosage (e.g. '5 mg', '10mg')."""
+    return parse_amount(val)[0] is not None
 
 
 def _extract_variations_prices(soup: BeautifulSoup) -> tuple[float | None, float | None, list[str], list[VariantData]]:
@@ -153,7 +175,7 @@ def _extract_variations_prices(soup: BeautifulSoup) -> tuple[float | None, float
                     pass
             # Extract dosage label from attributes
             for key, val in (var.get("attributes") or {}).items():
-                if val and _is_amount_attr(key):
+                if val and (_is_amount_attr(key) or _value_looks_like_dose(str(val))):
                     labels = _split_dosage_label(str(val).strip())
                     amounts.extend(labels)
                     # Build structured variant for each dosage label

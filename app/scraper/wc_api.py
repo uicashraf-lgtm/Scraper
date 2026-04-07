@@ -20,6 +20,7 @@ _SLUG_HYPHEN_RE = re.compile(r'(\d)-([a-zA-Z])')
 _IS_AMOUNT_ATTR = lambda name: any(
     k in name.lower() for k in ("mg", "weight", "dose", "dosage", "size", "amount", "variant", "strength")
 )
+_VALUE_LOOKS_LIKE_DOSE = lambda val: bool(_AMOUNT_RE.search(val)) if val else False
 
 
 def _clean_dosage_label(label: str) -> str:
@@ -161,9 +162,9 @@ def _extract_variant_amounts(variations: list[dict]) -> list[str]:
     amounts: list[str] = []
     for var in variations:
         for attr in (var.get("attributes") or []):
-            if _IS_AMOUNT_ATTR(attr.get("name", "")):
-                val = str(attr.get("option", "")).strip()
-                if val and val not in seen:
+            val = str(attr.get("option", "")).strip()
+            if val and (_IS_AMOUNT_ATTR(attr.get("name", "")) or _VALUE_LOOKS_LIKE_DOSE(val)):
+                if val not in seen:
                     seen.add(val)
                     amounts.append(val)
     return amounts
@@ -210,8 +211,8 @@ def process_wc_product(
             for var in variations:
                 var_price = _to_float(var.get("price") or var.get("regular_price"))
                 for attr in (var.get("attributes") or []):
-                    if _IS_AMOUNT_ATTR(attr.get("name", "")):
-                        label = str(attr.get("option", "")).strip()
+                    label = str(attr.get("option", "")).strip()
+                    if _IS_AMOUNT_ATTR(attr.get("name", "")) or _VALUE_LOOKS_LIKE_DOSE(label):
                         if label:
                             dosage_val, dosage_unit = _parse_amount(label)
                             if dosage_val is not None:
@@ -381,10 +382,11 @@ def process_wc_store_product(product: dict, base_url: str | None = None) -> dict
     if raw_variations and base_url and product.get("type") == "variable":
         # Extract dosage labels from attributes
         for attr in (product.get("attributes") or []):
-            if attr.get("has_variations") and _IS_AMOUNT_ATTR(attr.get("name", "")):
+            if attr.get("has_variations"):
+                attr_name_matches = _IS_AMOUNT_ATTR(attr.get("name", ""))
                 for term in (attr.get("terms") or []):
                     label = _clean_dosage_label(str(term.get("name", "")).strip())
-                    if label:
+                    if label and (attr_name_matches or _VALUE_LOOKS_LIKE_DOSE(label)):
                         variant_amounts.append(label)
 
         logger.info("[wc_store] Fetching %d variation prices for '%s'", len(raw_variations), name)
@@ -406,10 +408,10 @@ def process_wc_store_product(product: dict, base_url: str | None = None) -> dict
             vid = var.get("id")
             var_price = var_price_map.get(vid)
             for attr in var.get("attributes", []):
-                if _IS_AMOUNT_ATTR(attr.get("name", "")):
-                    # Store API variation values are often URL slugs ("10-mg");
-                    # clean them to canonical form ("10mg") before storing.
-                    label = _clean_dosage_label(str(attr.get("value", "")).strip())
+                # Store API variation values are often URL slugs ("10-mg");
+                # clean them to canonical form ("10mg") before storing.
+                label = _clean_dosage_label(str(attr.get("value", "")).strip())
+                if _IS_AMOUNT_ATTR(attr.get("name", "")) or _VALUE_LOOKS_LIKE_DOSE(label):
                     if label:
                         if label not in variant_amounts:
                             variant_amounts.append(label)
@@ -428,11 +430,11 @@ def process_wc_store_product(product: dict, base_url: str | None = None) -> dict
     # (variable products already populate variant_amounts above via the variations block)
     if not variant_amounts:
         for attr in (product.get("attributes") or []):
-            if _IS_AMOUNT_ATTR(attr.get("name", "")):
-                for term in (attr.get("terms") or []):
-                    label = str(term.get("name", "")).strip()
-                    if label:
-                        variant_amounts.append(label)
+            attr_name_matches = _IS_AMOUNT_ATTR(attr.get("name", ""))
+            for term in (attr.get("terms") or []):
+                label = str(term.get("name", "")).strip()
+                if label and (attr_name_matches or _VALUE_LOOKS_LIKE_DOSE(label)):
+                    variant_amounts.append(label)
 
     # Parse amount_mg from product name or first variant label
     amount_mg, amount_unit = None, None
