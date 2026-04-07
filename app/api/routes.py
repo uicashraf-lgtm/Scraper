@@ -823,7 +823,14 @@ def list_all_products(db: Session = Depends(get_db)):
                 lv_price_map[_normalize_dosage(lbl)] = lv.price
 
             labels: list[str] = []
-            if l.variant_amounts:
+            # When dose_locked, the admin has overridden the dosage —
+            # use amount_mg directly so stale variant_amounts can't
+            # keep the listing grouped under the old scraped dose.
+            if l.dose_locked and l.amount_mg is not None:
+                unit = (l.amount_unit or "mg").lower()
+                amt = l.amount_mg
+                labels.append(f"{int(amt)} {unit}" if amt == int(amt) else f"{amt} {unit}")
+            elif l.variant_amounts:
                 try:
                     for raw_d in _json.loads(l.variant_amounts):
                         for d in _split_dosage(str(raw_d)):
@@ -959,7 +966,8 @@ def product_prices(product_id: int, db: Session = Depends(get_db)):
                 result.append(entry)
         else:
             # No ListingVariant records — try expanding from variant_amounts
-            raw_va = base.get("variant_amounts_raw")
+            # When dose_locked, skip stale variant_amounts and use amount_mg directly
+            raw_va = base.get("variant_amounts_raw") if not l.dose_locked else None
             parsed_amounts = []
             if raw_va:
                 try:
