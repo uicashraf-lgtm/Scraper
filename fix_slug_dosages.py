@@ -16,33 +16,46 @@ from app.db.session import SessionLocal
 from app.models.entities import ListingVariant, VendorListing
 
 _SLUG_RE = re.compile(r'(\d)-([a-z])', re.IGNORECASE)
+# Matches dosage WITH word boundary (works when unit is followed by space or end-of-string)
 _DOSAGE_TOKEN_RE = re.compile(r'\d+(?:\.\d+)?\s*(?:mg|mcg|ug|g|iu|ml)\b', re.IGNORECASE)
+# Matches dosage prefix WITHOUT word boundary (handles slugs like "20mgsinglevial")
+_DOSAGE_PREFIX_RE = re.compile(r'^(\d+(?:\.\d+)?(?:mg|mcg|ug|g|iu|ml))', re.IGNORECASE)
 
 
 def _normalize_label(label: str) -> str:
     """Normalise a single variant label to canonical '10 mg' form.
 
-    Steps:
-      1. Strip slug hyphen between digit and unit: '10-mg' → '10mg'
-      2. If the label contains extra text beyond the dosage (e.g. '10 mg single vial'),
-         extract just the dosage token(s).
-      3. Normalise spacing: '10mg' → '10 mg'.
+    Handles:
+      '10-mg'            → '10 mg'   (slug hyphen)
+      '10 mg single vial'→ '10 mg'   (trailing text, unit followed by space)
+      '20mgsinglevial'   → '20 mg'   (trailing text, unit immediately followed by letters)
+      '10mg'             → '10 mg'   (already correct, just add space)
     """
     # Step 1: strip slug hyphen
     s = _SLUG_RE.sub(r'\1\2', label.strip())
 
-    # Step 2: extract dosage token(s) if extra text is present
+    # Step 2: strip all spaces so we work on a compact string, then lowercase
+    s = re.sub(r'\s+', '', s).lower()
+
+    # Step 3: extract dosage token(s)
+    # Try word-boundary match first (handles "10mg", end-of-string cases)
     tokens = _DOSAGE_TOKEN_RE.findall(s)
+    if not tokens:
+        # Fallback: extract dosage prefix even when followed by non-space letters
+        # e.g. "20mgsinglevial" → "20mg"
+        m = _DOSAGE_PREFIX_RE.match(s)
+        if m:
+            tokens = [m.group(1)]
+
     if len(tokens) == 1:
         s = tokens[0].strip()
     elif len(tokens) > 1:
-        # Multiple dosages in one label (e.g. blend "30mg/4mg") — keep all joined
+        # Multiple dosages in one label (e.g. blend) — keep all joined
         s = ' '.join(t.strip() for t in tokens)
-    # else: no dosage token found — keep the stripped string as-is
+    # else: no dosage token found — keep as-is
 
-    # Step 3: normalise spacing (remove all spaces then reinsert at digit→letter boundary)
-    s = re.sub(r'\s+', '', s).lower()
-    s = _SLUG_RE.sub(r'\1\2', s)               # re-apply after lowercasing
+    # Step 4: re-apply slug fix after lowercasing, then insert display space
+    s = _SLUG_RE.sub(r'\1\2', s)
     s = re.sub(r'(\d)([a-z])', r'\1 \2', s)    # '10mg' → '10 mg'
     return s
 
