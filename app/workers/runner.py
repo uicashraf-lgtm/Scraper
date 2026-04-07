@@ -170,7 +170,8 @@ def _crawl_vendor_via_wc_api(db, vendor: Vendor, base_url_override: str | None =
                 listing.price_per_mg = data["price"] / data["amount_mg"]
         elif listing.amount_mg and data["price"]:
             listing.price_per_mg = data["price"] / listing.amount_mg
-        listing.variant_amounts = _json.dumps(data["variant_amounts"]) if data["variant_amounts"] else None
+        if not listing.dose_locked:
+            listing.variant_amounts = _json.dumps(data["variant_amounts"]) if data["variant_amounts"] else None
         listing.vendor_product_name = data["name"]
         if data.get("sku"):
             listing.sku = data["sku"]
@@ -376,7 +377,8 @@ def crawl_listing(listing_id: int):
                 # Recalculate price_per_mg with the locked dose and new price
                 listing.price_per_mg = listing.last_price / listing.amount_mg
             import json as _json
-            listing.variant_amounts = _json.dumps(result.variant_amounts) if result.variant_amounts else None
+            if not listing.dose_locked:
+                listing.variant_amounts = _json.dumps(result.variant_amounts) if result.variant_amounts else None
 
             # Persist structured variants
             db.flush()
