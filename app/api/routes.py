@@ -875,6 +875,11 @@ def list_all_products(db: Session = Depends(get_db)):
             for lbl in sorted(dosage_map.keys(), key=_dosage_sort_key)
         ]
 
+        # Default to the dose with the most vendors
+        default_dosage = None
+        if available_dosages:
+            default_dosage = max(available_dosages, key=lambda d: len(d["vendors"]))["label"]
+
         category = next((p.category for p in group_products if p.category), None)
         description = next((p.description for p in group_products if p.description), None)
 
@@ -885,6 +890,7 @@ def list_all_products(db: Session = Depends(get_db)):
             "description": description,
             "tags": tags,
             "available_dosages": available_dosages,
+            "default_dosage": default_dosage,
             "vendor_count": len(listings),
             "min_price": min(prices) if prices else None,
             "top_vendors": top3,
