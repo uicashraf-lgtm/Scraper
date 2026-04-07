@@ -1210,6 +1210,17 @@ def patch_listing(listing_id: int, payload: ListingPatch, db: Session = Depends(
     return {"ok": True}
 
 
+@router.delete("/admin/listings/{listing_id}/variant-amounts")
+def clear_variant_amounts(listing_id: int, db: Session = Depends(get_db)):
+    """Clear stale variant_amounts on a listing so dosage grouping uses amount_mg."""
+    listing = db.query(VendorListing).filter(VendorListing.id == listing_id).first()
+    if not listing:
+        raise HTTPException(status_code=404, detail="Listing not found")
+    listing.variant_amounts = None
+    db.commit()
+    return {"ok": True, "listing_id": listing_id}
+
+
 @router.patch("/admin/vendors/{vendor_id}/meta")
 def update_vendor_meta(vendor_id: int, payload: VendorMetaPatch, db: Session = Depends(get_db)):
     vendor = db.query(Vendor).filter(Vendor.id == vendor_id).first()
