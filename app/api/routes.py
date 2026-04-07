@@ -733,29 +733,6 @@ def list_all_products(db: Session = Depends(get_db)):
         m = _re.search(r"(\d+(?:\.\d+)?)", d)
         return float(m.group(1)) if m else 0
 
-    _FORMULATION_RE = _re.compile(
-        r'\b(vials?|tabs?|tablets?|capsules?|caps?|liquid|spray|nasal\s*spray|drops?|cream|troches?|lozenge)\b',
-        _re.IGNORECASE,
-    )
-    _FORM_MAP = {
-        "vial": "Vials", "vials": "Vials",
-        "tab": "Tablets", "tabs": "Tablets", "tablet": "Tablets", "tablets": "Tablets",
-        "capsule": "Capsules", "capsules": "Capsules", "cap": "Capsules", "caps": "Capsules",
-        "liquid": "Liquid", "drop": "Liquid", "drops": "Liquid",
-        "spray": "Spray", "nasal spray": "Spray",
-        "cream": "Cream",
-        "troche": "Troches", "troches": "Troches", "lozenge": "Troches",
-    }
-
-    def _detect_formulation(product_name: str | None) -> str:
-        """Infer formulation from a vendor product name. Defaults to 'Vials'."""
-        if not product_name:
-            return "Vials"
-        m = _FORMULATION_RE.search(product_name)
-        if m:
-            return _FORM_MAP.get(m.group(1).lower(), "Vials")
-        return "Vials"
-
     all_products = db.query(CanonicalProduct).filter(CanonicalProduct.is_visible == True).all()
 
     # Group products by alias (admin display name) — admin rename controls grouping
@@ -806,7 +783,6 @@ def list_all_products(db: Session = Depends(get_db)):
                 "amount_unit": l.amount_unit,
                 "price_per_mg": l.price_per_mg,
                 "link": l.affiliate_url or build_affiliate_link(l.url, v.affiliate_template),
-                "formulation": _detect_formulation(l.vendor_product_name),
             })
         prices = [x["price"] for x in top3 if x.get("price") is not None]
 
@@ -881,7 +857,6 @@ def list_all_products(db: Session = Depends(get_db)):
                     "amount_mg": amt_mg,
                     "amount_unit": (l.amount_unit or "mg").lower(),
                     "price_per_mg": (price / amt_mg) if (price and amt_mg) else l.price_per_mg,
-                    "formulation": _detect_formulation(l.vendor_product_name),
                 }
                 if lbl not in dosage_map:
                     dosage_map[lbl] = {}
@@ -900,18 +875,6 @@ def list_all_products(db: Session = Depends(get_db)):
             for lbl in sorted(dosage_map.keys(), key=_dosage_sort_key)
         ]
 
-        # Collect distinct formulations that actually have vendor data
-        all_formulations: set[str] = set()
-        for dosage_entry in available_dosages:
-            for vendor in dosage_entry["vendors"]:
-                all_formulations.add(vendor.get("formulation", "Vials"))
-        # Stable ordering: Vials first, then alphabetical
-        _FORM_ORDER = ["Vials", "Tablets", "Capsules", "Liquid", "Spray", "Cream", "Troches"]
-        available_formulations = sorted(
-            all_formulations,
-            key=lambda f: (_FORM_ORDER.index(f) if f in _FORM_ORDER else len(_FORM_ORDER), f),
-        )
-
         category = next((p.category for p in group_products if p.category), None)
         description = next((p.description for p in group_products if p.description), None)
 
@@ -922,7 +885,6 @@ def list_all_products(db: Session = Depends(get_db)):
             "description": description,
             "tags": tags,
             "available_dosages": available_dosages,
-            "available_formulations": available_formulations,
             "vendor_count": len(listings),
             "min_price": min(prices) if prices else None,
             "top_vendors": top3,
