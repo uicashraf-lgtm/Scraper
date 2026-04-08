@@ -1,6 +1,8 @@
 import json
 import logging
-from datetime import datetime
+import threading
+import time
+from datetime import datetime, timezone
 
 from app.db.session import SessionLocal
 from app.models.entities import CoaDocument, ListingVariant, PriceHistory, ProductTag, Vendor, VendorListing, VendorTargetURL
@@ -617,13 +619,60 @@ def check_broken_links_job(frontend_url: str | None = None):
 
 
 WORKER_HEARTBEAT_KEY = "worker_heartbeat"
-WORKER_HEARTBEAT_TTL = 10  # seconds
+# TTL is intentionally generous so the monitoring page doesn't flip to
+# "offline" while the worker is busy processing a long-running crawl job.
+# The heartbeat is refreshed by a dedicated daemon thread every
+# WORKER_HEARTBEAT_INTERVAL seconds, independent of job processing.
+WORKER_HEARTBEAT_TTL = 30  # seconds
+WORKER_HEARTBEAT_INTERVAL = 5  # seconds between heartbeat refreshes
+
+
+def _heartbeat_loop(stop_event):
+    """Refresh the worker heartbeat key on a fixed interval.
+
+    Runs on a dedicated daemon thread so the heartbeat keeps getting
+    refreshed even while the main worker loop is blocked inside a
+    long-running crawl job (discovery, HTTP fetches, Playwright, etc.).
+    Without this, the heartbeat TTL would expire during normal job
+    processing and the monitoring UI would falsely report the worker
+    as offline.
+    """
+    r = None
+    while not (stop_event and stop_event.is_set()):
+        if r is None:
+            try:
+                r = redis_client()
+                r.ping()
+            except Exception as exc:
+                logger.debug("Heartbeat: Redis unavailable: %s", exc)
+                r = None
+                time.sleep(WORKER_HEARTBEAT_INTERVAL)
+                continue
+        try:
+            r.setex(
+                WORKER_HEARTBEAT_KEY,
+                WORKER_HEARTBEAT_TTL,
+                datetime.now(timezone.utc).isoformat(),
+            )
+        except Exception as exc:
+            logger.debug("Heartbeat: write failed: %s", exc)
+            r = None
+        time.sleep(WORKER_HEARTBEAT_INTERVAL)
 
 
 def run_worker_loop(stop_event=None):
-    import time as _time
-    from datetime import timezone
     logger.info("Worker loop started. Waiting for jobs on queue '%s'...", QUEUE_KEY)
+
+    # Heartbeat runs on its own daemon thread so it keeps firing while
+    # the main loop is busy inside a long crawl job.
+    hb_thread = threading.Thread(
+        target=_heartbeat_loop,
+        args=(stop_event,),
+        daemon=True,
+        name="worker-heartbeat",
+    )
+    hb_thread.start()
+
     r = None
     while not (stop_event and stop_event.is_set()):
         # Reconnect if needed
@@ -635,11 +684,10 @@ def run_worker_loop(stop_event=None):
             except Exception as exc:
                 logger.error("Redis unavailable: %s — retrying in 5s", exc)
                 r = None
-                _time.sleep(5)
+                time.sleep(5)
                 continue
 
         try:
-            r.setex(WORKER_HEARTBEAT_KEY, WORKER_HEARTBEAT_TTL, datetime.now(timezone.utc).isoformat())
             item = r.blpop(QUEUE_KEY, timeout=2)
         except Exception as exc:
             logger.error("Redis connection lost: %s — reconnecting...", exc)
