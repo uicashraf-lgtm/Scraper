@@ -20,9 +20,11 @@ _UNIT_NORMALIZE = {
     "mL": "mL",
 }
 
-# Match a number followed by a unit, optionally separated by a space
+# Match a number followed by a unit, optionally separated by a space.
+# Negative lookahead `(?!\s*/?\s*mol)` rejects molecular-weight strings like
+# "5135.92 g/mol" so chemistry metadata doesn't get parsed as a dosage.
 _PATTERN = re.compile(
-    r"(\d+(?:\.\d+)?)\s*(mg|mcg|ug|µg|g|iu|ml)\b",
+    r"(\d+(?:\.\d+)?)\s*(mg|mcg|ug|µg|g|iu|ml)\b(?!\s*/?\s*mol)",
     re.IGNORECASE,
 )
 
