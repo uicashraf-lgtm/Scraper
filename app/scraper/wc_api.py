@@ -15,11 +15,17 @@ from app.scraper.rate_limiter import http_get_with_retry, page_delay
 
 logger = logging.getLogger(__name__)
 
-_AMOUNT_RE = re.compile(r'\d+(?:\.\d+)?\s*(?:mg|mcg|ug|g|iu|ml)\b', re.IGNORECASE)
+_AMOUNT_RE = re.compile(r'\d+(?:\.\d+)?\s*(?:mg|mcg|ug|g|iu|ml)\b(?!\s*/?\s*mol)', re.IGNORECASE)
 _SLUG_HYPHEN_RE = re.compile(r'(\d)-([a-zA-Z])')
-_IS_AMOUNT_ATTR = lambda name: any(
-    k in name.lower() for k in ("mg", "weight", "dose", "dosage", "size", "amount", "variant", "strength", "content")
-)
+
+
+def _IS_AMOUNT_ATTR(name: str) -> bool:
+    """True if the attribute name represents a dosage/size, not molecular metadata."""
+    n = (name or "").lower()
+    # Molecular Weight / Molecular Formula are chemistry metadata, not dosages.
+    if "molecular" in n:
+        return False
+    return any(k in n for k in ("mg", "weight", "dose", "dosage", "size", "amount", "variant", "strength", "content"))
 
 
 def _clean_dosage_label(label: str) -> str:

@@ -15,7 +15,7 @@ from app.scraper.adapters.common import (
     read_text,
 )
 
-_DOSAGE_SPLIT = re.compile(r'\d+(?:\.\d+)?\s*(?:mg|mcg|ug|g|iu|ml)\b', re.IGNORECASE)
+_DOSAGE_SPLIT = re.compile(r'\d+(?:\.\d+)?\s*(?:mg|mcg|ug|g|iu|ml)\b(?!\s*/?\s*mol)', re.IGNORECASE)
 
 
 def _split_dosage_label(label: str) -> list[str]:
@@ -124,8 +124,14 @@ def _extract_variant_amounts(soup: BeautifulSoup) -> list[str]:
 
 
 def _is_amount_attr(name: str) -> bool:
-    """True if the attribute name likely represents a dosage/weight/size."""
+    """True if the attribute name likely represents a dosage/weight/size.
+
+    Excludes "Molecular Weight" / "Molecular Formula" — these are chemistry
+    metadata, not product dosages.
+    """
     name = name.lower()
+    if "molecular" in name:
+        return False
     return any(k in name for k in ("mg", "weight", "dose", "dosage", "size", "amount", "variant", "strength"))
 
 
