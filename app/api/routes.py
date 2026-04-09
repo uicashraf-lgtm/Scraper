@@ -878,6 +878,11 @@ def list_all_products(db: Session = Depends(get_db)):
         category = next((p.category for p in group_products if p.category), None)
         description = next((p.description for p in group_products if p.description), None)
 
+        # Canonical product click-through URL: cheapest vendor's product link.
+        # Without this the frontend has no reliable per-card link and falls
+        # back to the site home page.
+        product_url = top3[0]["link"] if top3 else None
+
         result.append({
             "id": primary.id,
             "name": primary.alias or primary.name,
@@ -887,6 +892,7 @@ def list_all_products(db: Session = Depends(get_db)):
             "available_dosages": available_dosages,
             "vendor_count": len(listings),
             "min_price": min(prices) if prices else None,
+            "product_url": product_url,
             "top_vendors": top3,
         })
 
