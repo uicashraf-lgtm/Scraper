@@ -71,10 +71,49 @@ aminoprices.com should then stop returning 502.
 
 ## Co-hosting NodeBB (optional)
 
-If you want to run NodeBB on the same VPS at e.g. `community.aminoprices.com`,
-put it in **its own file** (`/etc/nginx/sites-available/community`) with a
-**distinct** `server_name`. Do NOT add `community.aminoprices.com` to the
-accupep.conf server blocks, and do NOT add `accupep.com` to the NodeBB
-server blocks. Each domain gets exactly one server block. Remember to add
-a DNS A record for `community.aminoprices.com` pointing at the VPS IP
-(managed at Hostinger, since that's where the aminoprices.com zone lives).
+Reference config: `community.conf`
+
+The golden rule: **one domain = one nginx file = one server_name**. Never
+mix accupep.com and community.aminoprices.com in the same server block.
+
+### Setup steps (do this AFTER accupep.com is verified working)
+
+1. **DNS** — In Hostinger's DNS panel for aminoprices.com, add an A record:
+   `community` → `187.124.84.241` (VPS public IP).
+   Verify: `dig +short community.aminoprices.com` returns the VPS IP.
+
+2. **NodeBB setup** — On the VPS:
+   ```bash
+   cd /var/www/aminoprices-forum
+   ./nodebb setup
+   # URL: http://community.aminoprices.com
+   # Port: 4567
+   # Database: mongo (accept defaults)
+   # Create admin user when prompted
+   ```
+   Wait for "NodeBB Setup Completed."
+
+3. **Start NodeBB via PM2:**
+   ```bash
+   cd /var/www/aminoprices-forum
+   ./nodebb start
+   # Or via PM2:
+   pm2 start /var/www/aminoprices-forum/nodebb -- start
+   pm2 save
+   ```
+   Verify: `curl -i http://127.0.0.1:4567` returns HTML.
+
+4. **Install the nginx config:**
+   ```bash
+   sudo cp deploy/nginx/community.conf /etc/nginx/sites-available/community
+   sudo ln -sf /etc/nginx/sites-available/community /etc/nginx/sites-enabled/community
+   sudo nginx -t && sudo systemctl reload nginx
+   ```
+
+5. **Get SSL cert** (after HTTP is verified working):
+   ```bash
+   sudo certbot --nginx -d community.aminoprices.com
+   ```
+   Choose "redirect" when asked. Certbot adds the 443 block automatically.
+
+6. **Verify:** `https://community.aminoprices.com` shows the NodeBB welcome page.
