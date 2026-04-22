@@ -231,6 +231,7 @@ def list_vendors(db: Session = Depends(get_db)):
             "payment_methods": v.payment_methods,
             "rating": v.rating,
             "review_count": v.review_count,
+            "trustpilot_domain": v.trustpilot_domain,
             "founded_year": v.founded_year,
             "product_count": v.product_count,
             "bypass_strategy": v.bypass_strategy,

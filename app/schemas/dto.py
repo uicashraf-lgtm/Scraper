@@ -176,6 +176,7 @@ class VendorMetaPatch(BaseModel):
     bypass_strategy: str | None = None
     proxy_url: str | None = None
     affiliate_template: str | None = None
+    trustpilot_domain: str | None = None
 
 
 class ListingCanonicalPatch(BaseModel):

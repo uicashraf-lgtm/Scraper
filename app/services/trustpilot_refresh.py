@@ -55,9 +55,12 @@ def refresh_due_vendors(db: Session, stop_event: threading.Event | None = None) 
         if stop_event is not None and stop_event.is_set():
             logger.info("Trustpilot refresh aborted (stop event set) after %d vendor(s).", scraped)
             break
-        domain = _domain_from_base_url(vendor.base_url)
+        # Admin-set override wins when the site's own domain differs from the
+        # Trustpilot profile identifier (e.g. site at example.is, Trustpilot
+        # at example.com).
+        domain = (vendor.trustpilot_domain or "").strip().lower() or _domain_from_base_url(vendor.base_url)
         if not domain:
-            logger.info("Trustpilot: skipping vendor id=%d (no base_url)", vendor.id)
+            logger.info("Trustpilot: skipping vendor id=%d (no base_url or override)", vendor.id)
             continue
 
         try:

@@ -63,6 +63,10 @@ class Vendor(Base):
     rating: Mapped[float | None] = mapped_column(Float, nullable=True)
     review_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     trustpilot_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Override for the Trustpilot business identifier when it differs from the
+    # site's own domain (e.g. site at example.is but Trustpilot profile at example.com).
+    # If NULL, the scheduler derives it from base_url.
+    trustpilot_domain: Mapped[str | None] = mapped_column(String(191), nullable=True)
     founded_year: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     product_count: Mapped[int | None] = mapped_column(Integer, nullable=True)  # last known live count
 

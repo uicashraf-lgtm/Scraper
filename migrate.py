@@ -43,6 +43,7 @@ with engine.begin() as conn:
     add_column(conn, "wp_vendors", "wc_api_url",            "VARCHAR(1024) NULL")
     add_column(conn, "wp_vendors", "affiliate_template",    "VARCHAR(1024) NULL")
     add_column(conn, "wp_vendors", "trustpilot_checked_at", "DATETIME NULL")
+    add_column(conn, "wp_vendors", "trustpilot_domain",      "VARCHAR(191) NULL")
 
     print("-- wp_vendor_listings --")
     add_column(conn, "wp_vendor_listings", "in_stock",         "BOOLEAN NULL")
