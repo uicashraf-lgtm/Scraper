@@ -31,7 +31,12 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, _handle_shutdown)
 
     # Scheduler runs in a daemon thread — dies automatically when main thread exits
-    sched_thread = threading.Thread(target=scheduler_loop, daemon=True, name="scheduler")
+    sched_thread = threading.Thread(
+        target=scheduler_loop,
+        kwargs={"stop_event": stop_event},
+        daemon=True,
+        name="scheduler",
+    )
     sched_thread.start()
     print("Scheduler thread started.")
     print("Worker started. Waiting for jobs... (Ctrl+C to stop)")
@@ -40,6 +45,15 @@ if __name__ == "__main__":
         run_worker_loop(stop_event=stop_event)
     except KeyboardInterrupt:
         pass
+
+    # Give the scheduler up to ~45s to finish its current Playwright fetch
+    # before we exit. Without this, daemon-thread teardown can abort Chromium
+    # mid-call and the process exits with SIGABRT, which systemd flags as a
+    # failure.
+    logger.info("Waiting for scheduler to finish current work...")
+    sched_thread.join(timeout=45)
+    if sched_thread.is_alive():
+        logger.warning("Scheduler did not finish within timeout; exiting anyway.")
 
     logger.info("Worker stopped.")
     sys.exit(0)

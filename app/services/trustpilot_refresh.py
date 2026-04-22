@@ -11,6 +11,7 @@ on every poll, but we leave the existing `rating` / `review_count`
 untouched so the plugin keeps showing the last good value.
 """
 import logging
+import threading
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
 
@@ -32,9 +33,12 @@ def _domain_from_base_url(base_url: str | None) -> str | None:
     return host or None
 
 
-def refresh_due_vendors(db: Session) -> int:
+def refresh_due_vendors(db: Session, stop_event: threading.Event | None = None) -> int:
     """Refresh Trustpilot data for every enabled vendor whose row is stale.
-    Returns the number of vendors actually scraped this cycle."""
+    Returns the number of vendors actually scraped this cycle.
+    If a stop_event is supplied and becomes set between vendors, exits early
+    so the caller (systemd) can shut down cleanly without killing Playwright
+    mid-fetch."""
     cutoff = datetime.utcnow() - timedelta(hours=settings.trustpilot_refresh_hours)
 
     vendors = (
@@ -48,6 +52,9 @@ def refresh_due_vendors(db: Session) -> int:
 
     scraped = 0
     for vendor in vendors:
+        if stop_event is not None and stop_event.is_set():
+            logger.info("Trustpilot refresh aborted (stop event set) after %d vendor(s).", scraped)
+            break
         domain = _domain_from_base_url(vendor.base_url)
         if not domain:
             logger.info("Trustpilot: skipping vendor id=%d (no base_url)", vendor.id)
