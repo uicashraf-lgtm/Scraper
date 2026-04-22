@@ -168,11 +168,6 @@ def scrape_trustpilot(target: str) -> TrustpilotResult:
             ok=False, url=url, domain=domain,
             status_code=status_code, error=error or "no_html",
         )
-    if looks_blocked(status_code, html):
-        return TrustpilotResult(
-            ok=False, url=url, domain=domain,
-            status_code=status_code, error=f"blocked_http_{status_code}",
-        )
 
     soup = BeautifulSoup(html, "html.parser")
 
@@ -190,6 +185,16 @@ def scrape_trustpilot(target: str) -> TrustpilotResult:
         count = count if count is not None else c3
 
     ok = rating is not None and count is not None
+
+    error_msg: str | None = None
+    if not ok:
+        # Extraction failed — decide whether the page was blocked or just
+        # didn't contain a rating (e.g. domain has no Trustpilot profile)
+        if looks_blocked(status_code, html):
+            error_msg = f"blocked_http_{status_code}"
+        else:
+            error_msg = "trustpilot_data_not_found"
+
     return TrustpilotResult(
         ok=ok,
         url=url,
@@ -198,5 +203,5 @@ def scrape_trustpilot(target: str) -> TrustpilotResult:
         rating=rating,
         review_count=count,
         status_code=status_code,
-        error=None if ok else "trustpilot_data_not_found",
+        error=error_msg,
     )
