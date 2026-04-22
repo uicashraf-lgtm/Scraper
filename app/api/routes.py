@@ -126,6 +126,8 @@ def _effective_price_payload(db: Session, listing: VendorListing, vendor: Vendor
         "logo_url": vendor.logo_url,
         "coupon_code": vendor.coupon_code,
         "country": vendor.country,
+        "rating": vendor.rating,
+        "review_count": vendor.review_count,
         "in_stock": listing.in_stock if listing.in_stock is not None else (listing.last_status == "ok"),
         "amount_mg": listing.amount_mg,
         "amount_unit": listing.amount_unit,
