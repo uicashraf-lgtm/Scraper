@@ -10,6 +10,7 @@ No manual schedule setup is required — all enabled vendors are crawled automat
 Per-vendor interval can still be overridden via PATCH /api/admin/schedules/{id}.
 """
 import logging
+import threading
 import time
 from datetime import datetime, timedelta
 
@@ -87,10 +88,10 @@ def _run_due_schedules():
         db.close()
 
 
-def _refresh_trustpilot():
+def _refresh_trustpilot(stop_event: threading.Event | None = None):
     db = SessionLocal()
     try:
-        refresh_due_vendors(db)
+        refresh_due_vendors(db, stop_event=stop_event)
     except Exception as exc:
         logger.error("Trustpilot refresh error: %s", exc)
         db.rollback()
@@ -98,20 +99,31 @@ def _refresh_trustpilot():
         db.close()
 
 
-def scheduler_loop():
+def _should_stop(stop_event: threading.Event | None) -> bool:
+    return stop_event is not None and stop_event.is_set()
+
+
+def scheduler_loop(stop_event: threading.Event | None = None):
     logger.info(
         "Scheduler started. Price crawls every %dh, Trustpilot refresh every %dh. Poll interval: %ds.",
         DEFAULT_INTERVAL_HOURS,
         settings.trustpilot_refresh_hours,
         POLL_INTERVAL_SECONDS,
     )
-    while True:
+    while not _should_stop(stop_event):
         try:
             _run_due_schedules()
         except Exception as exc:
             logger.error("Unhandled scheduler error: %s", exc)
+        if _should_stop(stop_event):
+            break
         try:
-            _refresh_trustpilot()
+            _refresh_trustpilot(stop_event=stop_event)
         except Exception as exc:
             logger.error("Unhandled Trustpilot refresh error: %s", exc)
-        time.sleep(POLL_INTERVAL_SECONDS)
+        # Sleep in 1s slices so a stop signal wakes us immediately.
+        for _ in range(POLL_INTERVAL_SECONDS):
+            if _should_stop(stop_event):
+                break
+            time.sleep(1)
+    logger.info("Scheduler loop exited cleanly.")
