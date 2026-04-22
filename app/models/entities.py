@@ -62,6 +62,7 @@ class Vendor(Base):
     payment_methods: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # e.g. ["credit_card","crypto","check"]
     rating: Mapped[float | None] = mapped_column(Float, nullable=True)
     review_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    trustpilot_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     founded_year: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     product_count: Mapped[int | None] = mapped_column(Integer, nullable=True)  # last known live count
 

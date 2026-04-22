@@ -17,6 +17,7 @@ from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.entities import ScheduledCrawl, Vendor
 from app.services.queue import enqueue_vendor_crawl
+from app.services.trustpilot_refresh import refresh_due_vendors
 
 logger = logging.getLogger(__name__)
 
@@ -86,10 +87,22 @@ def _run_due_schedules():
         db.close()
 
 
+def _refresh_trustpilot():
+    db = SessionLocal()
+    try:
+        refresh_due_vendors(db)
+    except Exception as exc:
+        logger.error("Trustpilot refresh error: %s", exc)
+        db.rollback()
+    finally:
+        db.close()
+
+
 def scheduler_loop():
     logger.info(
-        "Scheduler started. All enabled vendors crawled every %dh. Poll interval: %ds.",
+        "Scheduler started. Price crawls every %dh, Trustpilot refresh every %dh. Poll interval: %ds.",
         DEFAULT_INTERVAL_HOURS,
+        settings.trustpilot_refresh_hours,
         POLL_INTERVAL_SECONDS,
     )
     while True:
@@ -97,4 +110,8 @@ def scheduler_loop():
             _run_due_schedules()
         except Exception as exc:
             logger.error("Unhandled scheduler error: %s", exc)
+        try:
+            _refresh_trustpilot()
+        except Exception as exc:
+            logger.error("Unhandled Trustpilot refresh error: %s", exc)
         time.sleep(POLL_INTERVAL_SECONDS)

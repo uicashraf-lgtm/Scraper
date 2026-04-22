@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     scheduler_interval_hours: int = 24
     scheduler_poll_seconds: int = 3600
 
+    # Trustpilot rating refresh (per-vendor)
+    trustpilot_refresh_hours: int = 72
+
     # Credential encryption key (32+ char string; stored in .env)
     secret_key: str = "changeme-please-set-in-dotenv-32c"
 
