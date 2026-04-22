@@ -16,17 +16,13 @@ import re
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
-import httpx
 from bs4 import BeautifulSoup
+
+from app.scraper.fetch import fetch_page, looks_blocked
 
 logger = logging.getLogger(__name__)
 
 TRUSTPILOT_BASE = "https://www.trustpilot.com/review/"
-
-_DEFAULT_UA = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-)
 
 
 @dataclass
@@ -162,34 +158,20 @@ def _extract_from_regex(html: str) -> tuple[float | None, int | None]:
     return rating, count
 
 
-def _fetch(url: str, timeout: float = 20.0) -> tuple[int | None, str | None, str | None]:
-    headers = {
-        "User-Agent": _DEFAULT_UA,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-    }
-    try:
-        with httpx.Client(timeout=timeout, follow_redirects=True, headers=headers) as client:
-            resp = client.get(url)
-        return resp.status_code, resp.text, None
-    except Exception as exc:
-        return None, None, f"request_error: {exc}"
-
-
 def scrape_trustpilot(target: str) -> TrustpilotResult:
     url, domain = _normalize_to_review_url(target)
     logger.info("Scraping Trustpilot: %s", url)
 
-    status_code, html, error = _fetch(url)
+    status_code, html, error = fetch_page(url)
     if not html:
         return TrustpilotResult(
             ok=False, url=url, domain=domain,
             status_code=status_code, error=error or "no_html",
         )
-    if status_code and status_code >= 400:
+    if looks_blocked(status_code, html):
         return TrustpilotResult(
             ok=False, url=url, domain=domain,
-            status_code=status_code, error=f"http_{status_code}",
+            status_code=status_code, error=f"blocked_http_{status_code}",
         )
 
     soup = BeautifulSoup(html, "html.parser")
