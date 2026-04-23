@@ -41,7 +41,8 @@ sudo nginx -t && sudo systemctl reload nginx
 
 ## Preconditions
 
-1. **uvicorn running on 127.0.0.1:8002**
+1. **uvicorn running on 127.0.0.1:8002** (managed by PM2 — see
+   [Running the API under PM2](#running-the-api-under-pm2) below)
    ```bash
    curl -i http://127.0.0.1:8002/health   # expect {"ok": true}
    ```
@@ -68,6 +69,44 @@ curl -i https://accupep.com/api/products
 
 Both should return 200. The WordPress plugin `/wp-json/pa/v1/products` on
 aminoprices.com should then stop returning 502.
+
+## Running the API under PM2
+
+The API (`run.py` → uvicorn on :8002, plus the scraper worker it supervises)
+should run under PM2 so that it restarts on crash/reboot and so that
+`pm2 list` shows it alongside NodeBB.
+
+Ecosystem file: [`deploy/ecosystem.config.js`](../ecosystem.config.js).
+
+```bash
+cd /var/www/peptiprices-backend
+
+# One-time: create log dir the ecosystem file points at
+sudo mkdir -p /var/log/peptiprices
+sudo chown "$USER":"$USER" /var/log/peptiprices
+
+# Start (or restart) the API under PM2
+pm2 start deploy/ecosystem.config.js
+pm2 save
+
+# Make PM2 come back after reboot (run the command it prints)
+pm2 startup
+```
+
+Verify it shows up:
+
+```bash
+pm2 list
+# expected: two entries — `peptiprices-api` and `nodebb`
+pm2 logs peptiprices-api --lines 50
+curl -i http://127.0.0.1:8002/health
+```
+
+If `pm2 list` only shows `nodebb`, the API is being run some other way
+(manual `python run.py`, tmux, systemd, Docker). Stop that first, then
+run `pm2 start deploy/ecosystem.config.js` so PM2 owns the process.
+Adjust `cwd` / `interpreter` in `ecosystem.config.js` if the repo or
+virtualenv live at a different path on your VPS.
 
 ## Co-hosting NodeBB (optional)
 

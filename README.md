@@ -54,6 +54,20 @@ docker compose up --build
 3. API docs:
 - `http://localhost:8002/docs`
 
+### Production (VPS) — PM2
+
+On the VPS the API is supervised by PM2 via
+[`deploy/ecosystem.config.js`](deploy/ecosystem.config.js) so that `pm2 list`
+shows it alongside NodeBB:
+
+```bash
+pm2 start deploy/ecosystem.config.js
+pm2 save
+```
+
+Full steps and troubleshooting: see
+[`deploy/nginx/README.md`](deploy/nginx/README.md#running-the-api-under-pm2).
+
 ## Core endpoints
 
 - `POST /api/admin/vendors`
