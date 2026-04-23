@@ -77,36 +77,81 @@ should run under PM2 so that it restarts on crash/reboot and so that
 `pm2 list` shows it alongside NodeBB.
 
 Ecosystem file: [`deploy/ecosystem.config.js`](../ecosystem.config.js).
+It auto-detects the repo root (`cwd`) from its own location and picks
+a Python interpreter in this order: `$PEPTI_PYTHON` → `./.venv/bin/python`
+→ `python3` on `$PATH`.
+
+### Start
+
+From inside the repo checkout (wherever it lives on the VPS):
 
 ```bash
-cd /var/www/peptiprices-backend
+cd /path/to/Scraper         # the directory containing run.py
 
-# One-time: create log dir the ecosystem file points at
-sudo mkdir -p /var/log/peptiprices
-sudo chown "$USER":"$USER" /var/log/peptiprices
+# If you use a virtualenv, create .venv here first (python3 -m venv .venv
+# && .venv/bin/pip install -r requirements.txt). Otherwise the ecosystem
+# falls back to system python3 — which must have the deps installed.
 
-# Start (or restart) the API under PM2
 pm2 start deploy/ecosystem.config.js
 pm2 save
-
-# Make PM2 come back after reboot (run the command it prints)
-pm2 startup
+pm2 startup                  # run the command it prints, for reboot persistence
 ```
 
-Verify it shows up:
+### Verify
 
 ```bash
 pm2 list
-# expected: two entries — `peptiprices-api` and `nodebb`
-pm2 logs peptiprices-api --lines 50
-curl -i http://127.0.0.1:8002/health
+# expected: `peptiprices-api` AND `nodebb`
+pm2 logs peptiprices-api --lines 80
+curl -i http://127.0.0.1:8002/health     # expect {"ok": true}
 ```
 
-If `pm2 list` only shows `nodebb`, the API is being run some other way
-(manual `python run.py`, tmux, systemd, Docker). Stop that first, then
-run `pm2 start deploy/ecosystem.config.js` so PM2 owns the process.
-Adjust `cwd` / `interpreter` in `ecosystem.config.js` if the repo or
-virtualenv live at a different path on your VPS.
+### Troubleshooting: `pm2 list` still shows only `nodebb`
+
+Work through these in order — one of them is almost certainly the cause:
+
+1. **Wrong user.** PM2 is per-user. Check which user owns NodeBB's PM2
+   daemon and run the API start command as **that same user**:
+   ```bash
+   ps -o user= -p "$(pgrep -f 'PM2.*God Daemon' | head -1)"
+   ```
+   If NodeBB is under `root` but you ran `pm2 start` as a different user,
+   you have two separate PM2 daemons and neither sees the other's apps.
+
+2. **`pm2 start` errored silently.** Re-run it and read the output:
+   ```bash
+   pm2 start deploy/ecosystem.config.js
+   pm2 jlist | python3 -c 'import json,sys;[print(a["name"], a["pm2_env"]["status"]) for a in json.load(sys.stdin)]'
+   ```
+   If the app is listed but `status=errored`, look at the error log
+   path it prints (`pm2 describe peptiprices-api`) and `pm2 logs
+   peptiprices-api --err --lines 100`.
+
+3. **Interpreter not found.** If `.venv/bin/python` doesn't exist and
+   `python3` isn't on PATH for PM2's environment, the process fork
+   fails. Fix by pointing at the right binary explicitly:
+   ```bash
+   PEPTI_PYTHON=/usr/bin/python3 pm2 start deploy/ecosystem.config.js --update-env
+   ```
+
+4. **Another process is already on :8002.** PM2 will keep restarting and
+   crashing. Find and stop it:
+   ```bash
+   sudo lsof -iTCP:8002 -sTCP:LISTEN
+   ```
+   Common culprits: a stray `python run.py`, tmux session, systemd unit,
+   or `docker compose up`. Stop that first, then `pm2 restart peptiprices-api`.
+
+5. **Ran `pm2 start` from the wrong directory.** You must pass
+   `deploy/ecosystem.config.js` as a **path** (not just the filename)
+   or `cd` to a directory where that path resolves. The ecosystem
+   auto-derives `cwd` from its own location, so the repo can live
+   anywhere, but PM2 has to find the file itself.
+
+6. **Dashboard cached.** If you use `pm2 monit` / the PM2 web dashboard,
+   `pm2 list` on the CLI is authoritative — trust the CLI output.
+
+Once it shows up, `pm2 save` is required to persist across reboots.
 
 ## Co-hosting NodeBB (optional)
 
