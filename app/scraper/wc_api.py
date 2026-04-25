@@ -304,6 +304,35 @@ def fetch_wc_store_products(base_url: str) -> list[dict]:
     return all_products
 
 
+def fetch_wc_store_product_by_url(product_url: str, base_url: str) -> dict | None:
+    """Fetch a single Store API product matching the URL's slug.
+
+    Used by the per-listing crawl path so single-listing refreshes get the
+    same per-variation in_stock/price data as the batch vendor crawl.
+    Returns None when the slug can't be derived or the API doesn't have it.
+    """
+    from urllib.parse import urlparse
+
+    path = urlparse(product_url).path.rstrip("/")
+    slug = path.rsplit("/", 1)[-1] if path else ""
+    if not slug:
+        return None
+
+    endpoint = base_url.rstrip("/") + "/wp-json/wc/store/v1/products"
+    try:
+        resp = http_get_with_retry(endpoint, params={"slug": slug}, timeout=15, max_retries=2)
+        if resp.status_code != 200:
+            logger.info("[wc_store] single-product fetch %s slug=%s → HTTP %s",
+                        endpoint, slug, resp.status_code)
+            return None
+        items = resp.json()
+        if isinstance(items, list) and items:
+            return items[0]
+    except Exception as exc:
+        logger.warning("[wc_store] single-product fetch failed for %s: %s", product_url, exc)
+    return None
+
+
 def _store_price(prices: dict) -> float | None:
     """Convert Store API price dict to a float. Handles both simple and variable (price_range)."""
     minor_unit = prices.get("currency_minor_unit", 2)

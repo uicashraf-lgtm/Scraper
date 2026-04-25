@@ -5,7 +5,7 @@ from datetime import datetime
 from app.db.session import SessionLocal
 from app.models.entities import ListingVariant, PriceHistory, ProductTag, Vendor, VendorListing, VendorTargetURL
 from app.scraper.discovery import discover_product_urls
-from app.scraper.fetch import ScrapeHints, scrape_url
+from app.scraper.fetch import ScrapeHints, ScrapeResult, scrape_url
 from app.services.pricing import create_crawl_log, is_blocked_response, maybe_raise_block_alert
 from app.services.product_mapper import resolve_or_create_canonical_product
 from app.services.queue import QUEUE_KEY, publish_event, redis_client
@@ -326,9 +326,61 @@ def crawl_listing(listing_id: int):
             bypass_strategy=vendor.bypass_strategy if vendor else None,
         )
 
-        # First attempt: try without login
-        logger.info("[crawl_listing] Attempt 1 (no login) url=%s", listing.url)
-        result = scrape_url(listing.url, hints=hints)
+        # WooCommerce Store API shortcut: when the vendor exposes the Store API,
+        # use it instead of HTML scraping. The API gives per-variation price + stock,
+        # which the HTML adapter often can't extract (Gutenberg/AJAX-loaded variants).
+        result: ScrapeResult | None = None
+        cookies = None
+        if vendor and vendor.wc_api_url and vendor.base_url:
+            from app.scraper.wc_api import fetch_wc_store_product_by_url, process_wc_store_product
+            from app.scraper.adapters.base import VariantData
+            try:
+                prod = fetch_wc_store_product_by_url(listing.url, vendor.base_url)
+                if prod:
+                    data = process_wc_store_product(prod, base_url=vendor.base_url)
+                    if data and data.get("price") is not None:
+                        result = ScrapeResult(
+                            ok=True,
+                            status_code=200,
+                            product_name=data.get("name"),
+                            price=data["price"],
+                            currency=data.get("currency") or "USD",
+                            message=None,
+                            body_excerpt=None,
+                            adapter="wc_store_api",
+                            in_stock=data.get("in_stock"),
+                            amount_mg=data.get("amount_mg"),
+                            amount_unit=data.get("amount_unit"),
+                            variant_amounts=data.get("variant_amounts") or [],
+                            variants=[
+                                VariantData(
+                                    dosage=v["dosage"],
+                                    unit=v.get("unit", "mg"),
+                                    price=v.get("price"),
+                                    in_stock=v.get("in_stock"),
+                                )
+                                for v in (data.get("variants") or [])
+                            ],
+                            price_max=data.get("price_max"),
+                            sku=data.get("sku"),
+                            tags=data.get("tags") or [],
+                        )
+                        # category isn't a ScrapeResult field; attach it dynamically
+                        # so the existing canonical-product code path picks it up.
+                        if data.get("category"):
+                            setattr(result, "category", data["category"])
+                        if data.get("price") and data.get("amount_mg"):
+                            result.price_per_mg = data["price"] / data["amount_mg"]
+                        logger.info("[crawl_listing] Store API hit listing_id=%d url=%s price=%s in_stock=%s variants=%d",
+                                    listing_id, listing.url, data["price"], data.get("in_stock"), len(result.variants))
+            except Exception as exc:
+                logger.warning("[crawl_listing] Store API path failed for listing_id=%d: %s — falling back to HTML",
+                               listing_id, exc)
+
+        # Fall back to HTML scrape when the Store API didn't return usable data.
+        if result is None:
+            logger.info("[crawl_listing] Attempt 1 (no login) url=%s", listing.url)
+            result = scrape_url(listing.url, hints=hints)
         blocked = is_blocked_response(result.status_code, result.body_excerpt)
 
         # If first attempt failed/blocked and vendor has login credentials, retry with login
