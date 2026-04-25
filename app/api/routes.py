@@ -1249,7 +1249,10 @@ def patch_listing(listing_id: int, payload: ListingPatch, db: Session = Depends(
                 unit=unit,
                 price=None,
             ))
-        listing.dose_locked = True
+        # Note: do NOT set dose_locked here. The variant-label path edits one row
+        # of a multi-variant listing; setting dose_locked makes the renderer
+        # collapse the entire listing to amount_mg, hiding every other variant.
+        # dose_locked is reserved for the listing-level single-dose path below.
     else:
         if payload.amount_mg is not None:
             listing.amount_mg = payload.amount_mg
