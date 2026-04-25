@@ -347,12 +347,19 @@ def _fetch_store_variation_prices(base_url: str, variations: list[dict]) -> list
                         var_price = int(raw) / (10 ** minor_unit)
                     except (ValueError, TypeError):
                         pass
+                # Per-variation stock from the Store API single-product response
+                var_in_stock: bool | None = None
+                if "is_in_stock" in data:
+                    var_in_stock = bool(data.get("is_in_stock"))
+                elif "is_purchasable" in data:
+                    var_in_stock = bool(data.get("is_purchasable"))
                 results.append({
                     "id": vid,
                     "price": var_price,
+                    "in_stock": var_in_stock,
                     "attributes": var.get("attributes", []),
                 })
-                logger.info("[wc_store] Variation %d → price=%s", vid, var_price)
+                logger.info("[wc_store] Variation %d → price=%s in_stock=%s", vid, var_price, var_in_stock)
             else:
                 logger.warning("[wc_store] Variation %d → HTTP %s", vid, resp.status_code)
             page_delay()
@@ -399,8 +406,9 @@ def process_wc_store_product(product: dict, base_url: str | None = None) -> dict
         logger.info("[wc_store] Fetching %d variation prices for '%s'", len(raw_variations), name)
         var_details = _fetch_store_variation_prices(base_url, raw_variations)
 
-        # Build a price lookup by variation ID
+        # Build price + stock lookups by variation ID
         var_price_map = {v["id"]: v["price"] for v in var_details}
+        var_stock_map = {v["id"]: v.get("in_stock") for v in var_details}
 
         all_prices = [p for p in var_price_map.values() if p is not None]
         if all_prices:
@@ -414,6 +422,7 @@ def process_wc_store_product(product: dict, base_url: str | None = None) -> dict
         for var in raw_variations:
             vid = var.get("id")
             var_price = var_price_map.get(vid)
+            var_in_stock = var_stock_map.get(vid)
             for attr in var.get("attributes", []):
                 if _IS_AMOUNT_ATTR(attr.get("name", "")):
                     # Store API variation values are often URL slugs ("10-mg");
@@ -428,6 +437,7 @@ def process_wc_store_product(product: dict, base_url: str | None = None) -> dict
                                 "dosage": dosage_val,
                                 "unit": dosage_unit or "mg",
                                 "price": var_price,
+                                "in_stock": var_in_stock,
                             })
 
         logger.info("[wc_store]   → %d variations, price_min=%s, price_max=%s, amounts=%s",
