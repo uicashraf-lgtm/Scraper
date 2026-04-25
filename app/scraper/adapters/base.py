@@ -12,7 +12,6 @@ class VariantData:
     dosage: float
     unit: str  # "mg", "mcg", "IU", etc.
     price: float | None  # None if per-variant price unknown
-    in_stock: bool | None = None  # None when stock state unknown for this variant
 
 
 @dataclass

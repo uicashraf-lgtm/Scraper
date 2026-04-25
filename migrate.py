@@ -54,9 +54,6 @@ with engine.begin() as conn:
     add_column(conn, "wp_vendor_listings", "is_manual",        "BOOLEAN NOT NULL DEFAULT FALSE")
     add_column(conn, "wp_vendor_listings", "affiliate_url",    "VARCHAR(2048) NULL")
 
-    print("-- wp_listing_variants --")
-    add_column(conn, "wp_listing_variants", "in_stock",        "BOOLEAN NULL")
-
     print("-- wp_product_aliases: drop unique constraint on alias_normalized (allow multiple products to share an alias) --")
     result = conn.execute(text(
         "SELECT COUNT(*) FROM information_schema.STATISTICS "

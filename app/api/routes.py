@@ -120,7 +120,7 @@ def _effective_price_payload(db: Session, listing: VendorListing, vendor: Vendor
     # Fetch variants for this listing
     variants = db.query(ListingVariant).filter(ListingVariant.listing_id == listing.id).all()
     variant_list = [
-        {"dosage": v.dosage, "unit": v.unit, "price": v.price, "in_stock": v.in_stock}
+        {"dosage": v.dosage, "unit": v.unit, "price": v.price}
         for v in variants
     ]
 
@@ -830,19 +830,13 @@ def list_all_products(db: Session = Depends(get_db)):
                 "link": l.affiliate_url or build_affiliate_link(l.url, v.affiliate_template),
             }
             lv_list = listing_variants_map.get(l.id, [])
-            # Build maps from normalized dosage label -> per-variant price / stock.
-            # Per-variant stock matters for variable WC products: the parent product
-            # is "instock" whenever any dose is available, so without this fallback
-            # a sold-out 10mg variant inherits the listing's True flag.
+            # Build a map from normalized dosage label -> variant price
             lv_price_map: dict[str, float | None] = {}
-            lv_stock_map: dict[str, bool | None] = {}
             for lv in lv_list:
                 amt = lv.dosage
                 unit = (lv.unit or "mg").lower()
                 lbl = f"{int(amt)} {unit}" if amt == int(amt) else f"{amt} {unit}"
-                norm = _normalize_dosage(lbl)
-                lv_price_map[norm] = lv.price
-                lv_stock_map[norm] = lv.in_stock
+                lv_price_map[_normalize_dosage(lbl)] = lv.price
 
             labels: list[str] = []
             # When dose_locked, the admin has overridden the dosage —
@@ -870,14 +864,10 @@ def list_all_products(db: Session = Depends(get_db)):
                 # Use per-variant price if available, fall back to listing price
                 var_price = lv_price_map.get(norm_lbl, base_price)
                 price = var_price if var_price is not None else base_price
-                # Per-variant stock overrides listing-level when known.
-                var_in_stock = lv_stock_map.get(norm_lbl)
-                in_stock_val = var_in_stock if var_in_stock is not None else base_entry["in_stock"]
                 amt_match = _re.search(r'(\d+(?:\.\d+)?)', lbl)
                 amt_mg = float(amt_match.group(1)) if amt_match else l.amount_mg
                 vendor_entry = {
                     **base_entry,
-                    "in_stock": in_stock_val,
                     "price": price,
                     "previous_price": prev_price_map.get(l.id),
                     "amount_mg": amt_mg,
@@ -989,8 +979,6 @@ def product_prices(product_id: int, db: Session = Depends(get_db)):
                 entry = dict(base)
                 entry["amount_mg"] = var["dosage"]
                 entry["amount_unit"] = var.get("unit") or "mg"
-                if var.get("in_stock") is not None:
-                    entry["in_stock"] = var["in_stock"]
                 if var.get("price") is not None:
                     entry["effective_price"] = var["price"]
                     entry["price_min"] = var["price"]

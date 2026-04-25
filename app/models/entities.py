@@ -147,7 +147,6 @@ class ListingVariant(Base):
     dosage: Mapped[float] = mapped_column(Float, nullable=False)
     unit: Mapped[str] = mapped_column(String(16), default="mg")
     price: Mapped[float | None] = mapped_column(Float, nullable=True)
-    in_stock: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
 
 class ManualPriceOverride(Base):
