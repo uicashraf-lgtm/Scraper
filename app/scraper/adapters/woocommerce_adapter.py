@@ -157,6 +157,10 @@ def _extract_variations_prices(soup: BeautifulSoup) -> tuple[float | None, float
                     prices.append(var_price)
                 except Exception:
                     pass
+            # WooCommerce exposes per-variation stock in the variations JSON
+            var_in_stock: bool | None = None
+            if "is_in_stock" in var:
+                var_in_stock = bool(var.get("is_in_stock"))
             # Extract dosage label from attributes
             for key, val in (var.get("attributes") or {}).items():
                 if val and _is_amount_attr(key):
@@ -170,6 +174,7 @@ def _extract_variations_prices(soup: BeautifulSoup) -> tuple[float | None, float
                                 dosage=dosage_val,
                                 unit=dosage_unit or "mg",
                                 price=var_price,
+                                in_stock=var_in_stock,
                             ))
         return (
             min(prices) if prices else None,

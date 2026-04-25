@@ -215,13 +215,16 @@ def process_wc_product(
             # Build structured variants: pair each variation's dosage with its price
             for var in variations:
                 var_price = _to_float(var.get("price") or var.get("regular_price"))
+                var_in_stock: bool | None = None
+                if "stock_status" in var:
+                    var_in_stock = (var.get("stock_status") == "instock")
                 for attr in (var.get("attributes") or []):
                     if _IS_AMOUNT_ATTR(attr.get("name", "")):
                         label = str(attr.get("option", "")).strip()
                         if label:
                             dosage_val, dosage_unit = _parse_amount(label)
                             if dosage_val is not None:
-                                variants.append({"dosage": dosage_val, "unit": dosage_unit or "mg", "price": var_price})
+                                variants.append({"dosage": dosage_val, "unit": dosage_unit or "mg", "price": var_price, "in_stock": var_in_stock})
             logger.info("[wc_api]   → %d variations, price_min=%s, price_max=%s, amounts=%s",
                         len(variations), price, price_max, variant_amounts)
 

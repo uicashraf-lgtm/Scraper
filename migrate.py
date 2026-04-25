@@ -66,6 +66,9 @@ with engine.begin() as conn:
     else:
         print("  = unique index already dropped or not found")
 
+    print("-- wp_listing_variants --")
+    add_column(conn, "wp_listing_variants", "in_stock", "BOOLEAN NULL")
+
     print("-- new tables --")
 
 # create_all only creates tables that don't exist yet — safe to call

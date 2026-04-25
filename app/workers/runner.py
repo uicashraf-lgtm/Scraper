@@ -56,7 +56,7 @@ def _get_or_refresh_session(db, vendor: Vendor) -> list[dict] | None:
 
 
 def _persist_variants(db, listing_id: int, variants: list[dict]):
-    """Replace listing variants with fresh data. Each variant: {"dosage": float, "unit": str, "price": float|None}.
+    """Replace listing variants with fresh data. Each variant: {"dosage": float, "unit": str, "price": float|None, "in_stock": bool|None}.
     When the listing has dose_locked=True, only update prices on existing variants
     and add new ones — never delete admin-created variants."""
     listing = db.query(VendorListing).filter(VendorListing.id == listing_id).first()
@@ -75,12 +75,15 @@ def _persist_variants(db, listing_id: int, variants: list[dict]):
             if existing:
                 if v.get("price") is not None:
                     existing.price = v["price"]
+                if v.get("in_stock") is not None:
+                    existing.in_stock = v["in_stock"]
             else:
                 db.add(ListingVariant(
                     listing_id=listing_id,
                     dosage=dosage,
                     unit=unit,
                     price=v.get("price"),
+                    in_stock=v.get("in_stock"),
                 ))
     else:
         db.query(ListingVariant).filter(ListingVariant.listing_id == listing_id).delete()
@@ -90,6 +93,7 @@ def _persist_variants(db, listing_id: int, variants: list[dict]):
                 dosage=v["dosage"],
                 unit=v.get("unit", "mg"),
                 price=v.get("price"),
+                in_stock=v.get("in_stock"),
             ))
     db.flush()
 
@@ -384,7 +388,7 @@ def crawl_listing(listing_id: int):
             db.flush()
             if result.variants:
                 _persist_variants(db, listing.id, [
-                    {"dosage": v.dosage, "unit": v.unit, "price": v.price}
+                    {"dosage": v.dosage, "unit": v.unit, "price": v.price, "in_stock": v.in_stock}
                     for v in result.variants
                 ])
 
