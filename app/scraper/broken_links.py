@@ -16,7 +16,7 @@ from bs4 import BeautifulSoup
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models.entities import BrokenLinkCheck, BrokenLinkRun, VendorListing
+from app.models.entities import BrokenLinkCheck, BrokenLinkRun
 
 logger = logging.getLogger(__name__)
 
@@ -32,16 +32,6 @@ _REDIRECTOR_HINTS = (
 
 def _host(url: str) -> str:
     return (urlparse(url).netloc or "").lower().removeprefix("www.")
-
-
-def canonical_match_key(url: str) -> str:
-    """Strip query string, fragment, and trailing slash so URLs decorated with
-    affiliate / tracking params (e.g. `?amino=ref`, `?utm_source=...`) still
-    match the canonical listing URL stored in `wp_vendor_listings`."""
-    p = urlparse(url)
-    host = (p.netloc or "").lower().removeprefix("www.")
-    path = p.path or "/"
-    return f"{p.scheme}://{host}{path}".rstrip("/")
 
 
 def extract_candidate_links(html: str, base_url: str) -> list[str]:
@@ -116,7 +106,6 @@ def _upsert_check(
     status_code: int | None,
     final_url: str | None,
     error: str | None,
-    listing_id: int | None,
 ) -> None:
     row = db.query(BrokenLinkCheck).filter(BrokenLinkCheck.url == url).first()
     if row is None:
@@ -128,8 +117,6 @@ def _upsert_check(
     row.error = error[:255] if error else None
     row.is_broken = _is_broken(status_code, error)
     row.checked_at = datetime.utcnow()
-    if listing_id is not None:
-        row.listing_id = listing_id
 
 
 def run_broken_link_check(db: Session, frontend_url: str | None = None) -> BrokenLinkRun:
@@ -180,16 +167,6 @@ def run_broken_link_check(db: Session, frontend_url: str | None = None) -> Broke
             db.flush()
             logger.info("[broken-links] auditing %d link(s) from %s", len(urls), target)
 
-            # Map known listing URLs by canonical key (scheme+host+path only) so
-            # affiliate/tracking params like "?amino=ref" don't break the match.
-            listing_lookup: dict[str, int] = {}
-            if urls:
-                candidate_hosts = {_host(u) for u in urls}
-                rows = db.query(VendorListing.id, VendorListing.url).all()
-                for lid, lurl in rows:
-                    if _host(lurl) in candidate_hosts:
-                        listing_lookup[canonical_match_key(lurl)] = lid
-
             broken_count = 0
             for url in urls:
                 status_code, final_url, error = _check_link(client, url)
@@ -204,7 +181,6 @@ def run_broken_link_check(db: Session, frontend_url: str | None = None) -> Broke
                     status_code=status_code,
                     final_url=final_url,
                     error=error,
-                    listing_id=listing_lookup.get(canonical_match_key(url)),
                 )
                 db.flush()
 

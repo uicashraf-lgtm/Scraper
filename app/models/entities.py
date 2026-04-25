@@ -235,5 +235,4 @@ class BrokenLinkCheck(Base):
     status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_broken: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     error: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    listing_id: Mapped[int | None] = mapped_column(ForeignKey("wp_vendor_listings.id"), nullable=True, index=True)
     checked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

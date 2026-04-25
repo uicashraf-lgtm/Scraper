@@ -1562,24 +1562,20 @@ def list_broken_links(
 ):
     """Return product links found on the front page on the most recent audits.
     By default only broken links are returned (vendor likely removed product)."""
-    q = db.query(BrokenLinkCheck, Vendor.name.label("vendor_name")).outerjoin(
-        VendorListing, VendorListing.id == BrokenLinkCheck.listing_id
-    ).outerjoin(Vendor, Vendor.id == VendorListing.vendor_id)
+    q = db.query(BrokenLinkCheck)
     if broken_only:
         q = q.filter(BrokenLinkCheck.is_broken.is_(True))
     rows = q.order_by(BrokenLinkCheck.checked_at.desc()).limit(max(1, min(limit, 5000))).all()
     return [
         {
-            "id": r.BrokenLinkCheck.id,
-            "url": r.BrokenLinkCheck.url,
-            "final_url": r.BrokenLinkCheck.final_url,
-            "status_code": r.BrokenLinkCheck.status_code,
-            "is_broken": r.BrokenLinkCheck.is_broken,
-            "error": r.BrokenLinkCheck.error,
-            "listing_id": r.BrokenLinkCheck.listing_id,
-            "vendor": r.vendor_name,
-            "run_id": r.BrokenLinkCheck.run_id,
-            "checked_at": r.BrokenLinkCheck.checked_at,
+            "id": r.id,
+            "url": r.url,
+            "final_url": r.final_url,
+            "status_code": r.status_code,
+            "is_broken": r.is_broken,
+            "error": r.error,
+            "run_id": r.run_id,
+            "checked_at": r.checked_at,
         }
         for r in rows
     ]
