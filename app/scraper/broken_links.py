@@ -24,6 +24,22 @@ logger = logging.getLogger(__name__)
 _SOURCE_LABEL = "db:vendor_listings"
 
 
+# URL path fragments that strongly suggest an auth-wall redirect (login form,
+# account page, SSO). When the post-redirect URL contains one of these, we
+# treat the response as "auth_required" rather than broken — the vendor still
+# has the product, it just gates it behind login.
+_AUTH_GATE_PATH_HINTS = (
+    "/login",
+    "/sign-in", "/signin",
+    "/sign_in",
+    "/my-account", "/myaccount",
+    "/account/login", "/account/sign",
+    "/auth/", "/authentication",
+    "/wp-login.php",
+    "/customer/account/login",
+)
+
+
 def _check_link(client: httpx.Client, url: str) -> tuple[int | None, str | None, str | None]:
     """Return (status_code, final_url, error). Tries HEAD first, falls back to
     GET when the server rejects HEAD. Follows redirects."""
@@ -43,12 +59,31 @@ def _check_link(client: httpx.Client, url: str) -> tuple[int | None, str | None,
         return None, None, f"error: {exc.__class__.__name__}"
 
 
-def _is_broken(status_code: int | None, error: str | None) -> bool:
+def _classify(
+    status_code: int | None,
+    final_url: str | None,
+    error: str | None,
+) -> tuple[bool, str | None]:
+    """Return (is_broken, label). Distinguishes login-walled responses from
+    actual product removal: 401/403 and login-page redirects are not broken."""
     if error:
-        return True
+        return True, error
     if status_code is None:
-        return True
-    return status_code >= 400
+        return True, "no_status"
+
+    # 401/403: vendor is asking us to authenticate. Product likely still there.
+    if status_code in (401, 403):
+        return False, "auth_required"
+
+    # Final URL after redirects landed on a login/account page.
+    if final_url:
+        lower = final_url.lower()
+        if any(hint in lower for hint in _AUTH_GATE_PATH_HINTS):
+            return False, "auth_required"
+
+    if status_code >= 400:
+        return True, None
+    return False, None
 
 
 def _upsert_check(
@@ -58,7 +93,9 @@ def _upsert_check(
     status_code: int | None,
     final_url: str | None,
     error: str | None,
-) -> None:
+) -> bool:
+    """Upsert the check row and return whether the link is considered broken."""
+    is_broken, label = _classify(status_code, final_url, error)
     row = db.query(BrokenLinkCheck).filter(BrokenLinkCheck.url == url).first()
     if row is None:
         row = BrokenLinkCheck(url=url)
@@ -66,9 +103,10 @@ def _upsert_check(
     row.run_id = run_id
     row.status_code = status_code
     row.final_url = final_url
-    row.error = error[:255] if error else None
-    row.is_broken = _is_broken(status_code, error)
+    row.error = label[:255] if label else None
+    row.is_broken = is_broken
     row.checked_at = datetime.utcnow()
+    return is_broken
 
 
 def _collect_listing_urls(db: Session) -> list[str]:
@@ -125,11 +163,7 @@ def run_broken_link_check(db: Session) -> BrokenLinkRun:
             broken_count = 0
             for url in urls:
                 status_code, final_url, error = _check_link(client, url)
-                if _is_broken(status_code, error):
-                    broken_count += 1
-                    logger.info("[broken-links] BROKEN %s status=%s err=%s",
-                                url, status_code, error)
-                _upsert_check(
+                is_broken = _upsert_check(
                     db,
                     run_id=run.id,
                     url=url,
@@ -137,6 +171,10 @@ def run_broken_link_check(db: Session) -> BrokenLinkRun:
                     final_url=final_url,
                     error=error,
                 )
+                if is_broken:
+                    broken_count += 1
+                    logger.info("[broken-links] BROKEN %s status=%s err=%s",
+                                url, status_code, error)
                 db.flush()
 
         run.broken_count = broken_count
