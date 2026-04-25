@@ -16,15 +16,28 @@ from app.scraper.adapters.common import (
 )
 
 _DOSAGE_SPLIT = re.compile(r'\d+(?:\.\d+)?\s*(?:mg|mcg|ug|g|iu|ml)\b(?!\s*/?\s*mol)', re.IGNORECASE)
+# Detects blend labels like "10/3 mg", "5/5mg", "2.5 / 5 mg" — collapse to a
+# single dose token using the first number (the headline dose vendors advertise).
+_BLEND_LABEL_RE = re.compile(
+    r'(\d+(?:\.\d+)?)\s*/\s*\d+(?:\.\d+)?\s*(mg|mcg|ug|g|iu|ml)\b',
+    re.IGNORECASE,
+)
 
 
 def _split_dosage_label(label: str) -> list[str]:
     """Split concatenated strings like '5 MG 10 MG' → ['5 MG', '10 MG'].
 
+    Blend labels of the form 'N/M unit' (e.g. '10/3 mg') collapse to a
+    single token using the first number, so the variant grouping isn't
+    polluted by the second component's dose.
+
     When there is exactly one dosage match return just the matched portion,
     not the whole label — so '10 mg single vial' → ['10 mg'] rather than
     the whole string (which would later normalise to '10 mgsinglevial').
     """
+    blend = _BLEND_LABEL_RE.search(label)
+    if blend:
+        return [f"{blend.group(1)} {blend.group(2).lower()}"]
     matches = _DOSAGE_SPLIT.findall(label)
     if len(matches) > 1:
         return [m.strip() for m in matches]
