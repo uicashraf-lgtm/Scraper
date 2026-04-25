@@ -157,6 +157,12 @@ def _extract_variations_prices(soup: BeautifulSoup) -> tuple[float | None, float
                     prices.append(var_price)
                 except Exception:
                     pass
+            # WC injects is_in_stock per variation in the form JSON; fall back to
+            # is_purchasable when the field is absent (older themes).
+            raw_stock = var.get("is_in_stock")
+            if raw_stock is None:
+                raw_stock = var.get("is_purchasable")
+            var_in_stock: bool | None = bool(raw_stock) if raw_stock is not None else None
             # Extract dosage label from attributes
             for key, val in (var.get("attributes") or {}).items():
                 if val and _is_amount_attr(key):
@@ -170,6 +176,7 @@ def _extract_variations_prices(soup: BeautifulSoup) -> tuple[float | None, float
                                 dosage=dosage_val,
                                 unit=dosage_unit or "mg",
                                 price=var_price,
+                                in_stock=var_in_stock,
                             ))
         return (
             min(prices) if prices else None,
