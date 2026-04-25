@@ -15,8 +15,8 @@ class Settings(BaseSettings):
     # Trustpilot rating refresh (per-vendor)
     trustpilot_refresh_hours: int = 72
 
-    # Broken-link audit over stored vendor listings (every 3 days by default).
-    broken_link_check_interval_hours: int = 72
+    # Broken-link audit over stored vendor listings.
+    # Triggered manually via POST /api/admin/broken-links/run — no schedule.
     broken_link_request_timeout: float = 15.0
     broken_link_max_links: int = 5000
 
