@@ -849,6 +849,15 @@ def list_all_products(db: Session = Depends(get_db)):
                 unit = (l.amount_unit or "mg").lower()
                 amt = l.amount_mg
                 labels.append(f"{int(amt)} {unit}" if amt == int(amt) else f"{amt} {unit}")
+            elif lv_list:
+                # Real per-variant rows exist — render exactly those, ignoring
+                # variant_amounts. Page attribute terms (e.g. genpeptide listing
+                # 10/15 mg as terms but only selling 6/12/24/30/48/50) leak
+                # phantom dose cards otherwise.
+                for lv in sorted(lv_list, key=lambda x: x.dosage):
+                    amt = lv.dosage
+                    unit = (lv.unit or "mg").lower()
+                    labels.append(f"{int(amt)} {unit}" if amt == int(amt) else f"{amt} {unit}")
             elif l.variant_amounts:
                 try:
                     for raw_d in _json.loads(l.variant_amounts):
