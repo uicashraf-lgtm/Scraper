@@ -215,13 +215,16 @@ def process_wc_product(
             # Build structured variants: pair each variation's dosage with its price
             for var in variations:
                 var_price = _to_float(var.get("price") or var.get("regular_price"))
+                var_in_stock: bool | None = None
+                if "stock_status" in var:
+                    var_in_stock = (var.get("stock_status") == "instock")
                 for attr in (var.get("attributes") or []):
                     if _IS_AMOUNT_ATTR(attr.get("name", "")):
                         label = str(attr.get("option", "")).strip()
                         if label:
                             dosage_val, dosage_unit = _parse_amount(label)
                             if dosage_val is not None:
-                                variants.append({"dosage": dosage_val, "unit": dosage_unit or "mg", "price": var_price})
+                                variants.append({"dosage": dosage_val, "unit": dosage_unit or "mg", "price": var_price, "in_stock": var_in_stock})
             logger.info("[wc_api]   → %d variations, price_min=%s, price_max=%s, amounts=%s",
                         len(variations), price, price_max, variant_amounts)
 
@@ -301,6 +304,35 @@ def fetch_wc_store_products(base_url: str) -> list[dict]:
     return all_products
 
 
+def fetch_wc_store_product_by_url(product_url: str, base_url: str) -> dict | None:
+    """Fetch a single Store API product matching the URL's slug.
+
+    Used by the per-listing crawl path so single-listing refreshes get the
+    same per-variation in_stock/price data as the batch vendor crawl.
+    Returns None when the slug can't be derived or the API doesn't have it.
+    """
+    from urllib.parse import urlparse
+
+    path = urlparse(product_url).path.rstrip("/")
+    slug = path.rsplit("/", 1)[-1] if path else ""
+    if not slug:
+        return None
+
+    endpoint = base_url.rstrip("/") + "/wp-json/wc/store/v1/products"
+    try:
+        resp = http_get_with_retry(endpoint, params={"slug": slug}, timeout=15, max_retries=2)
+        if resp.status_code != 200:
+            logger.info("[wc_store] single-product fetch %s slug=%s → HTTP %s",
+                        endpoint, slug, resp.status_code)
+            return None
+        items = resp.json()
+        if isinstance(items, list) and items:
+            return items[0]
+    except Exception as exc:
+        logger.warning("[wc_store] single-product fetch failed for %s: %s", product_url, exc)
+    return None
+
+
 def _store_price(prices: dict) -> float | None:
     """Convert Store API price dict to a float. Handles both simple and variable (price_range)."""
     minor_unit = prices.get("currency_minor_unit", 2)
@@ -344,12 +376,19 @@ def _fetch_store_variation_prices(base_url: str, variations: list[dict]) -> list
                         var_price = int(raw) / (10 ** minor_unit)
                     except (ValueError, TypeError):
                         pass
+                # Per-variation stock from the Store API single-product response
+                var_in_stock: bool | None = None
+                if "is_in_stock" in data:
+                    var_in_stock = bool(data.get("is_in_stock"))
+                elif "is_purchasable" in data:
+                    var_in_stock = bool(data.get("is_purchasable"))
                 results.append({
                     "id": vid,
                     "price": var_price,
+                    "in_stock": var_in_stock,
                     "attributes": var.get("attributes", []),
                 })
-                logger.info("[wc_store] Variation %d → price=%s", vid, var_price)
+                logger.info("[wc_store] Variation %d → price=%s in_stock=%s", vid, var_price, var_in_stock)
             else:
                 logger.warning("[wc_store] Variation %d → HTTP %s", vid, resp.status_code)
             page_delay()
@@ -396,8 +435,9 @@ def process_wc_store_product(product: dict, base_url: str | None = None) -> dict
         logger.info("[wc_store] Fetching %d variation prices for '%s'", len(raw_variations), name)
         var_details = _fetch_store_variation_prices(base_url, raw_variations)
 
-        # Build a price lookup by variation ID
+        # Build price + stock lookups by variation ID
         var_price_map = {v["id"]: v["price"] for v in var_details}
+        var_stock_map = {v["id"]: v.get("in_stock") for v in var_details}
 
         all_prices = [p for p in var_price_map.values() if p is not None]
         if all_prices:
@@ -411,6 +451,7 @@ def process_wc_store_product(product: dict, base_url: str | None = None) -> dict
         for var in raw_variations:
             vid = var.get("id")
             var_price = var_price_map.get(vid)
+            var_in_stock = var_stock_map.get(vid)
             for attr in var.get("attributes", []):
                 if _IS_AMOUNT_ATTR(attr.get("name", "")):
                     # Store API variation values are often URL slugs ("10-mg");
@@ -425,6 +466,7 @@ def process_wc_store_product(product: dict, base_url: str | None = None) -> dict
                                 "dosage": dosage_val,
                                 "unit": dosage_unit or "mg",
                                 "price": var_price,
+                                "in_stock": var_in_stock,
                             })
 
         logger.info("[wc_store]   → %d variations, price_min=%s, price_max=%s, amounts=%s",

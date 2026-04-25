@@ -120,7 +120,7 @@ def _effective_price_payload(db: Session, listing: VendorListing, vendor: Vendor
     # Fetch variants for this listing
     variants = db.query(ListingVariant).filter(ListingVariant.listing_id == listing.id).all()
     variant_list = [
-        {"dosage": v.dosage, "unit": v.unit, "price": v.price}
+        {"dosage": v.dosage, "unit": v.unit, "price": v.price, "in_stock": v.in_stock}
         for v in variants
     ]
 
@@ -830,13 +830,16 @@ def list_all_products(db: Session = Depends(get_db)):
                 "link": l.affiliate_url or build_affiliate_link(l.url, v.affiliate_template),
             }
             lv_list = listing_variants_map.get(l.id, [])
-            # Build a map from normalized dosage label -> variant price
+            # Build maps from normalized dosage label -> variant price / stock
             lv_price_map: dict[str, float | None] = {}
+            lv_stock_map: dict[str, bool | None] = {}
             for lv in lv_list:
                 amt = lv.dosage
                 unit = (lv.unit or "mg").lower()
                 lbl = f"{int(amt)} {unit}" if amt == int(amt) else f"{amt} {unit}"
-                lv_price_map[_normalize_dosage(lbl)] = lv.price
+                key = _normalize_dosage(lbl)
+                lv_price_map[key] = lv.price
+                lv_stock_map[key] = lv.in_stock
 
             labels: list[str] = []
             # When dose_locked, the admin has overridden the dosage —
@@ -846,6 +849,15 @@ def list_all_products(db: Session = Depends(get_db)):
                 unit = (l.amount_unit or "mg").lower()
                 amt = l.amount_mg
                 labels.append(f"{int(amt)} {unit}" if amt == int(amt) else f"{amt} {unit}")
+            elif lv_list:
+                # Real per-variant rows exist — render exactly those, ignoring
+                # variant_amounts. Page attribute terms (e.g. genpeptide listing
+                # 10/15 mg as terms but only selling 6/12/24/30/48/50) leak
+                # phantom dose cards otherwise.
+                for lv in sorted(lv_list, key=lambda x: x.dosage):
+                    amt = lv.dosage
+                    unit = (lv.unit or "mg").lower()
+                    labels.append(f"{int(amt)} {unit}" if amt == int(amt) else f"{amt} {unit}")
             elif l.variant_amounts:
                 try:
                     for raw_d in _json.loads(l.variant_amounts):
@@ -864,10 +876,14 @@ def list_all_products(db: Session = Depends(get_db)):
                 # Use per-variant price if available, fall back to listing price
                 var_price = lv_price_map.get(norm_lbl, base_price)
                 price = var_price if var_price is not None else base_price
+                # Use per-variant stock if recorded, otherwise inherit listing-level
+                var_stock = lv_stock_map.get(norm_lbl)
+                in_stock = var_stock if var_stock is not None else base_entry["in_stock"]
                 amt_match = _re.search(r'(\d+(?:\.\d+)?)', lbl)
                 amt_mg = float(amt_match.group(1)) if amt_match else l.amount_mg
                 vendor_entry = {
                     **base_entry,
+                    "in_stock": in_stock,
                     "price": price,
                     "previous_price": prev_price_map.get(l.id),
                     "amount_mg": amt_mg,
@@ -985,6 +1001,8 @@ def product_prices(product_id: int, db: Session = Depends(get_db)):
                     entry["price_max"] = var["price"]
                     if var["dosage"]:
                         entry["price_per_mg"] = var["price"] / var["dosage"]
+                if var.get("in_stock") is not None:
+                    entry["in_stock"] = var["in_stock"]
                 result.append(entry)
         else:
             # No ListingVariant records — try expanding from variant_amounts
