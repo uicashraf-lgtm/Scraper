@@ -34,6 +34,16 @@ def _host(url: str) -> str:
     return (urlparse(url).netloc or "").lower().removeprefix("www.")
 
 
+def canonical_match_key(url: str) -> str:
+    """Strip query string, fragment, and trailing slash so URLs decorated with
+    affiliate / tracking params (e.g. `?amino=ref`, `?utm_source=...`) still
+    match the canonical listing URL stored in `wp_vendor_listings`."""
+    p = urlparse(url)
+    host = (p.netloc or "").lower().removeprefix("www.")
+    path = p.path or "/"
+    return f"{p.scheme}://{host}{path}".rstrip("/")
+
+
 def extract_candidate_links(html: str, base_url: str) -> list[str]:
     """Pull product/buy candidate URLs out of the front page HTML.
 
@@ -170,15 +180,15 @@ def run_broken_link_check(db: Session, frontend_url: str | None = None) -> Broke
             db.flush()
             logger.info("[broken-links] auditing %d link(s) from %s", len(urls), target)
 
-            # Map known listing URLs so a broken row can point at the matching listing.
+            # Map known listing URLs by canonical key (scheme+host+path only) so
+            # affiliate/tracking params like "?amino=ref" don't break the match.
             listing_lookup: dict[str, int] = {}
             if urls:
-                rows = (
-                    db.query(VendorListing.id, VendorListing.url)
-                    .filter(VendorListing.url.in_(urls))
-                    .all()
-                )
-                listing_lookup = {url: lid for lid, url in rows}
+                candidate_hosts = {_host(u) for u in urls}
+                rows = db.query(VendorListing.id, VendorListing.url).all()
+                for lid, lurl in rows:
+                    if _host(lurl) in candidate_hosts:
+                        listing_lookup[canonical_match_key(lurl)] = lid
 
             broken_count = 0
             for url in urls:
@@ -194,7 +204,7 @@ def run_broken_link_check(db: Session, frontend_url: str | None = None) -> Broke
                     status_code=status_code,
                     final_url=final_url,
                     error=error,
-                    listing_id=listing_lookup.get(url),
+                    listing_id=listing_lookup.get(canonical_match_key(url)),
                 )
                 db.flush()
 
