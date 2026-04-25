@@ -207,3 +207,33 @@ class ScheduledCrawl(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     last_enqueued_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class BrokenLinkRun(Base):
+    """One row per scheduled front-page broken-link audit."""
+    __tablename__ = "wp_broken_link_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    frontend_url: Mapped[str] = mapped_column(String(1024), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    total_links: Mapped[int] = mapped_column(Integer, default=0)
+    broken_count: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(32), default="running")  # running|done|error
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class BrokenLinkCheck(Base):
+    """One row per product link found on the front page (upserted each run)."""
+    __tablename__ = "wp_broken_link_checks"
+    __table_args__ = (Index("uq_broken_link_url", "url", unique=True, mysql_length={"url": 191}),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("wp_broken_link_runs.id"), nullable=False, index=True)
+    url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    final_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_broken: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    error: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    listing_id: Mapped[int | None] = mapped_column(ForeignKey("wp_vendor_listings.id"), nullable=True, index=True)
+    checked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

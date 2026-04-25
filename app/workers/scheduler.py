@@ -16,8 +16,8 @@ from datetime import datetime, timedelta
 
 from app.core.config import settings
 from app.db.session import SessionLocal
-from app.models.entities import ScheduledCrawl, Vendor
-from app.services.queue import enqueue_vendor_crawl
+from app.models.entities import BrokenLinkRun, ScheduledCrawl, Vendor
+from app.services.queue import enqueue_broken_link_check, enqueue_vendor_crawl
 from app.services.trustpilot_refresh import refresh_due_vendors
 
 logger = logging.getLogger(__name__)
@@ -99,15 +99,45 @@ def _refresh_trustpilot(stop_event: threading.Event | None = None):
         db.close()
 
 
+def _maybe_enqueue_broken_link_check():
+    """Enqueue a broken-link audit if interval has elapsed since the last run."""
+    if not settings.frontend_url:
+        return
+    db = SessionLocal()
+    try:
+        latest = (
+            db.query(BrokenLinkRun)
+            .order_by(BrokenLinkRun.started_at.desc())
+            .first()
+        )
+        cutoff = datetime.utcnow() - timedelta(hours=settings.broken_link_check_interval_hours)
+        if latest is not None and latest.started_at >= cutoff:
+            return
+        enqueue_broken_link_check()
+        logger.info(
+            "Scheduler: broken-link audit enqueued (interval=%dh, last_run=%s)",
+            settings.broken_link_check_interval_hours,
+            latest.started_at.isoformat() if latest else "never",
+        )
+    except Exception as exc:
+        logger.error("Broken-link scheduler error: %s", exc)
+        db.rollback()
+    finally:
+        db.close()
+
+
 def _should_stop(stop_event: threading.Event | None) -> bool:
     return stop_event is not None and stop_event.is_set()
 
 
 def scheduler_loop(stop_event: threading.Event | None = None):
     logger.info(
-        "Scheduler started. Price crawls every %dh, Trustpilot refresh every %dh. Poll interval: %ds.",
+        "Scheduler started. Price crawls every %dh, Trustpilot refresh every %dh, "
+        "broken-link audit every %dh (frontend_url=%s). Poll interval: %ds.",
         DEFAULT_INTERVAL_HOURS,
         settings.trustpilot_refresh_hours,
+        settings.broken_link_check_interval_hours,
+        settings.frontend_url or "<not configured>",
         POLL_INTERVAL_SECONDS,
     )
     while not _should_stop(stop_event):
@@ -121,6 +151,12 @@ def scheduler_loop(stop_event: threading.Event | None = None):
             _refresh_trustpilot(stop_event=stop_event)
         except Exception as exc:
             logger.error("Unhandled Trustpilot refresh error: %s", exc)
+        if _should_stop(stop_event):
+            break
+        try:
+            _maybe_enqueue_broken_link_check()
+        except Exception as exc:
+            logger.error("Unhandled broken-link scheduler error: %s", exc)
         # Sleep in 1s slices so a stop signal wakes us immediately.
         for _ in range(POLL_INTERVAL_SECONDS):
             if _should_stop(stop_event):

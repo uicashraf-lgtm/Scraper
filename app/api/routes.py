@@ -14,6 +14,8 @@ from app.core.config import settings
 from app.db.session import get_db
 from app.models.entities import (
     Alert,
+    BrokenLinkCheck,
+    BrokenLinkRun,
     CanonicalProduct,
     CrawlLog,
     ListingVariant,
@@ -1550,6 +1552,78 @@ def invalidate_vendor_session(vendor_id: int, db: Session = Depends(get_db)):
     from app.scraper.session_manager import invalidate_session
     invalidate_session(db, vendor_id)
     return {"ok": True}
+
+
+@router.get("/admin/broken-links")
+def list_broken_links(
+    broken_only: bool = True,
+    limit: int = 500,
+    db: Session = Depends(get_db),
+):
+    """Return product links found on the front page on the most recent audits.
+    By default only broken links are returned (vendor likely removed product)."""
+    q = db.query(BrokenLinkCheck, Vendor.name.label("vendor_name")).outerjoin(
+        VendorListing, VendorListing.id == BrokenLinkCheck.listing_id
+    ).outerjoin(Vendor, Vendor.id == VendorListing.vendor_id)
+    if broken_only:
+        q = q.filter(BrokenLinkCheck.is_broken.is_(True))
+    rows = q.order_by(BrokenLinkCheck.checked_at.desc()).limit(max(1, min(limit, 5000))).all()
+    return [
+        {
+            "id": r.BrokenLinkCheck.id,
+            "url": r.BrokenLinkCheck.url,
+            "final_url": r.BrokenLinkCheck.final_url,
+            "status_code": r.BrokenLinkCheck.status_code,
+            "is_broken": r.BrokenLinkCheck.is_broken,
+            "error": r.BrokenLinkCheck.error,
+            "listing_id": r.BrokenLinkCheck.listing_id,
+            "vendor": r.vendor_name,
+            "run_id": r.BrokenLinkCheck.run_id,
+            "checked_at": r.BrokenLinkCheck.checked_at,
+        }
+        for r in rows
+    ]
+
+
+@router.get("/admin/broken-links/runs")
+def list_broken_link_runs(limit: int = 50, db: Session = Depends(get_db)):
+    rows = (
+        db.query(BrokenLinkRun)
+        .order_by(BrokenLinkRun.started_at.desc())
+        .limit(max(1, min(limit, 500)))
+        .all()
+    )
+    return [
+        {
+            "id": r.id,
+            "frontend_url": r.frontend_url,
+            "status": r.status,
+            "started_at": r.started_at,
+            "finished_at": r.finished_at,
+            "total_links": r.total_links,
+            "broken_count": r.broken_count,
+            "error": r.error,
+        }
+        for r in rows
+    ]
+
+
+@router.post("/admin/broken-links/run")
+def trigger_broken_link_check(frontend_url: str | None = None):
+    """Queue an immediate broken-link audit. If `frontend_url` is omitted, the
+    configured `FRONTEND_URL` env var is used."""
+    target = frontend_url or settings.frontend_url
+    if not target:
+        raise HTTPException(
+            status_code=400,
+            detail="No frontend_url provided and FRONTEND_URL env is not set.",
+        )
+    from app.services.queue import enqueue_broken_link_check
+    try:
+        enqueue_broken_link_check(target)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Redis unavailable: {exc}")
+    return {"ok": True, "message": "Broken-link audit queued", "frontend_url": target}
 
 
 @router.get("/stream/prices")
