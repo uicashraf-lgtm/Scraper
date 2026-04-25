@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from datetime import datetime
 
 from bs4 import BeautifulSoup
@@ -54,6 +55,19 @@ from app.services.product_mapper import normalize_product_name
 from app.services.queue import enqueue_listing_crawl, enqueue_vendor_crawl
 
 router = APIRouter()
+
+_DOSAGE_PREFIX_RE = re.compile(r'^(\d+(?:\.\d+)?(?:mg|mcg|ug|g|iu|ml))', re.IGNORECASE)
+_DOSAGE_SLUG_RE = re.compile(r'(\d)-([a-z])', re.IGNORECASE)
+
+
+def _normalize_variant_label(label: str) -> str:
+    """Canonicalise dose labels for comparison: '10MG' / '10-mg' / '10mg' / '10 mg' all → '10 mg'."""
+    s = _DOSAGE_SLUG_RE.sub(r'\1\2', str(label).strip())
+    s = re.sub(r'\s+', '', s).lower()
+    m = _DOSAGE_PREFIX_RE.match(s)
+    if m:
+        s = m.group(1)
+    return re.sub(r'(\d)([a-z])', r'\1 \2', s)
 
 
 def _manual_override(db: Session, listing_id: int):
@@ -1176,9 +1190,33 @@ def patch_listing(listing_id: int, payload: ListingPatch, db: Session = Depends(
     if payload.in_stock is not None:
         listing.in_stock = payload.in_stock
 
-    # Variant-level dose save: create/update a ListingVariant record
+    # Variant-level dose save: create/update a ListingVariant record.
+    # When variant_label encodes a dose different from amount_mg, this is a
+    # merge — drop the stale ListingVariant at the old dose and prune the
+    # matching label from variant_amounts so the frontend stops rendering it.
     if payload.variant_label is not None and payload.amount_mg is not None:
         unit = payload.amount_unit or "mg"
+
+        old_match = re.search(r'(\d+(?:\.\d+)?)', str(payload.variant_label))
+        old_dose = float(old_match.group(1)) if old_match else None
+
+        if old_dose is not None and abs(old_dose - payload.amount_mg) > 1e-9:
+            db.query(ListingVariant).filter(
+                ListingVariant.listing_id == listing_id,
+                ListingVariant.dosage == old_dose,
+                ListingVariant.unit == unit,
+            ).delete(synchronize_session=False)
+
+            if listing.variant_amounts:
+                try:
+                    raw_va = json.loads(listing.variant_amounts)
+                    if isinstance(raw_va, list):
+                        target = _normalize_variant_label(payload.variant_label)
+                        pruned = [e for e in raw_va if _normalize_variant_label(str(e)) != target]
+                        listing.variant_amounts = json.dumps(pruned) if pruned else None
+                except Exception:
+                    pass
+
         existing = (
             db.query(ListingVariant)
             .filter(ListingVariant.listing_id == listing_id,
