@@ -27,6 +27,13 @@ def enqueue_listing_crawl(listing_id: int) -> None:
     enqueue_job({"type": "crawl_listing", "listing_id": listing_id})
 
 
+def enqueue_broken_link_check(frontend_url: str | None = None) -> None:
+    payload: dict = {"type": "check_broken_links"}
+    if frontend_url:
+        payload["frontend_url"] = frontend_url
+    enqueue_job(payload)
+
+
 def publish_event(payload: dict) -> None:
     r = redis_client()
     r.publish(EVENTS_CHANNEL, json.dumps(payload))
