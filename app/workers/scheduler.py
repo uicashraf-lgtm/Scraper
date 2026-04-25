@@ -101,8 +101,6 @@ def _refresh_trustpilot(stop_event: threading.Event | None = None):
 
 def _maybe_enqueue_broken_link_check():
     """Enqueue a broken-link audit if interval has elapsed since the last run."""
-    if not settings.frontend_url:
-        return
     db = SessionLocal()
     try:
         latest = (
@@ -133,11 +131,10 @@ def _should_stop(stop_event: threading.Event | None) -> bool:
 def scheduler_loop(stop_event: threading.Event | None = None):
     logger.info(
         "Scheduler started. Price crawls every %dh, Trustpilot refresh every %dh, "
-        "broken-link audit every %dh (frontend_url=%s). Poll interval: %ds.",
+        "broken-link audit every %dh. Poll interval: %ds.",
         DEFAULT_INTERVAL_HOURS,
         settings.trustpilot_refresh_hours,
         settings.broken_link_check_interval_hours,
-        settings.frontend_url or "<not configured>",
         POLL_INTERVAL_SECONDS,
     )
     while not _should_stop(stop_event):

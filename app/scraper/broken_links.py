@@ -1,75 +1,27 @@
 """
-Front-page broken-link audit.
+Broken-link audit over stored vendor listings.
 
-Fetches the configured public front page, extracts every link that looks like a
-product / buy / vendor redirector link, and HTTP-checks each (following
-redirects). A link is flagged broken if the final response is 4xx/5xx, the
-host is unreachable, or the request times out. Results are persisted to
+Iterates every enabled vendor's listing URLs (the same URLs the WordPress
+plugin renders as "buy" links on the front page) and HTTP-checks each.
+A link is flagged broken if the final response is 4xx/5xx, the host is
+unreachable, or the request times out. Results land in
 `wp_broken_link_runs` and `wp_broken_link_checks` so admins can review.
 """
 import logging
 from datetime import datetime
-from urllib.parse import urljoin, urlparse
 
 import httpx
-from bs4 import BeautifulSoup
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models.entities import BrokenLinkCheck, BrokenLinkRun
+from app.models.entities import BrokenLinkCheck, BrokenLinkRun, Vendor, VendorListing
 
 logger = logging.getLogger(__name__)
 
-
-# Path fragments that almost always mean "this is a product or affiliate redirector".
-# Used to keep same-domain links that point at the vendor (e.g. /go/123, /buy/abc).
-_REDIRECTOR_HINTS = (
-    "/go/", "/out/", "/click", "/redirect", "/r/",
-    "/buy/", "/affiliate", "/visit/", "/track/",
-    "/product/", "/products/", "/item/",
-)
-
-
-def _host(url: str) -> str:
-    return (urlparse(url).netloc or "").lower().removeprefix("www.")
-
-
-def extract_candidate_links(html: str, base_url: str) -> list[str]:
-    """Pull product/buy candidate URLs out of the front page HTML.
-
-    Heuristics: any absolute http(s) <a href> that is either external to the
-    page's own host, or hits a known same-domain redirector path."""
-    soup = BeautifulSoup(html, "html.parser")
-    base_host = _host(base_url)
-
-    seen: set[str] = set()
-    out: list[str] = []
-    for anchor in soup.find_all("a", href=True):
-        href = anchor.get("href")
-        if not isinstance(href, str):
-            continue
-        href = href.strip()
-        if not href or href.startswith(("#", "mailto:", "tel:", "javascript:")):
-            continue
-
-        url = urljoin(base_url, href).split("#", 1)[0]
-        if not url.startswith(("http://", "https://")):
-            continue
-
-        host = _host(url)
-        if not host:
-            continue
-
-        is_external = host != base_host
-        is_redirector = any(hint in url.lower() for hint in _REDIRECTOR_HINTS)
-        if not (is_external or is_redirector):
-            continue
-
-        if url in seen:
-            continue
-        seen.add(url)
-        out.append(url)
-    return out
+# Sentinel stored in BrokenLinkRun.frontend_url so the (NOT NULL) column is
+# populated and old front-page rows remain distinguishable from new DB-sourced
+# runs.
+_SOURCE_LABEL = "db:vendor_listings"
 
 
 def _check_link(client: httpx.Client, url: str) -> tuple[int | None, str | None, str | None]:
@@ -119,54 +71,57 @@ def _upsert_check(
     row.checked_at = datetime.utcnow()
 
 
-def run_broken_link_check(db: Session, frontend_url: str | None = None) -> BrokenLinkRun:
-    """Execute one audit run and persist results. Idempotent per URL (upsert)."""
-    target = frontend_url or settings.frontend_url
-    if not target:
-        raise ValueError("frontend_url is not configured")
+def _collect_listing_urls(db: Session) -> list[str]:
+    """Pull every URL we'd put on the front page: enabled vendors only,
+    skipping admin-entered manual listings (they're not vendor pages) and
+    listings without an http(s) URL."""
+    rows = (
+        db.query(VendorListing.url)
+        .join(Vendor, Vendor.id == VendorListing.vendor_id)
+        .filter(Vendor.enabled.is_(True))
+        .filter(VendorListing.is_manual.is_(False))
+        .all()
+    )
+    seen: set[str] = set()
+    urls: list[str] = []
+    for (url,) in rows:
+        if not url or not isinstance(url, str):
+            continue
+        if not url.startswith(("http://", "https://")):
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        urls.append(url)
+    return urls
 
-    run = BrokenLinkRun(frontend_url=target, started_at=datetime.utcnow(), status="running")
+
+def run_broken_link_check(db: Session) -> BrokenLinkRun:
+    """Execute one audit run over every stored vendor listing URL and persist
+    results. Idempotent per URL (upsert)."""
+    run = BrokenLinkRun(
+        frontend_url=_SOURCE_LABEL,
+        started_at=datetime.utcnow(),
+        status="running",
+    )
     db.add(run)
     db.flush()  # populate run.id
+
+    urls = _collect_listing_urls(db)
+    if len(urls) > settings.broken_link_max_links:
+        logger.warning("[broken-links] truncating %d listing URLs to max %d",
+                       len(urls), settings.broken_link_max_links)
+        urls = urls[: settings.broken_link_max_links]
+
+    run.total_links = len(urls)
+    db.flush()
+    logger.info("[broken-links] auditing %d listing URL(s)", len(urls))
 
     headers = {"User-Agent": settings.scraper_user_agent}
     timeout = settings.broken_link_request_timeout
 
     try:
-        with httpx.Client(
-            timeout=timeout,
-            follow_redirects=True,
-            headers=headers,
-        ) as client:
-            try:
-                page_resp = client.get(target)
-            except httpx.RequestError as exc:
-                run.status = "error"
-                run.error = f"front page unreachable: {exc.__class__.__name__}: {exc}"[:1000]
-                run.finished_at = datetime.utcnow()
-                db.commit()
-                logger.error("[broken-links] front page unreachable %s: %s", target, exc)
-                return run
-
-            if page_resp.status_code >= 400:
-                run.status = "error"
-                run.error = f"front page HTTP {page_resp.status_code}"
-                run.finished_at = datetime.utcnow()
-                db.commit()
-                logger.error("[broken-links] front page returned %s for %s",
-                             page_resp.status_code, target)
-                return run
-
-            urls = extract_candidate_links(page_resp.text, str(page_resp.url))
-            if len(urls) > settings.broken_link_max_links:
-                logger.warning("[broken-links] truncating %d candidate links to max %d",
-                               len(urls), settings.broken_link_max_links)
-                urls = urls[: settings.broken_link_max_links]
-
-            run.total_links = len(urls)
-            db.flush()
-            logger.info("[broken-links] auditing %d link(s) from %s", len(urls), target)
-
+        with httpx.Client(timeout=timeout, follow_redirects=True, headers=headers) as client:
             broken_count = 0
             for url in urls:
                 status_code, final_url, error = _check_link(client, url)
@@ -184,12 +139,12 @@ def run_broken_link_check(db: Session, frontend_url: str | None = None) -> Broke
                 )
                 db.flush()
 
-            run.broken_count = broken_count
-            run.status = "done"
-            run.finished_at = datetime.utcnow()
-            db.commit()
-            logger.info("[broken-links] DONE %d broken / %d total", broken_count, len(urls))
-            return run
+        run.broken_count = broken_count
+        run.status = "done"
+        run.finished_at = datetime.utcnow()
+        db.commit()
+        logger.info("[broken-links] DONE %d broken / %d total", broken_count, len(urls))
+        return run
     except Exception as exc:
         run.status = "error"
         run.error = f"{exc.__class__.__name__}: {exc}"[:1000]

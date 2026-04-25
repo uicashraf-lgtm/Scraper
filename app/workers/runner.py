@@ -509,12 +509,12 @@ def crawl_listing(listing_id: int):
         db.close()
 
 
-def check_broken_links_job(frontend_url: str | None = None):
+def check_broken_links_job():
     """Worker entrypoint for the periodic broken-link audit."""
     from app.scraper.broken_links import run_broken_link_check
     db = SessionLocal()
     try:
-        run = run_broken_link_check(db, frontend_url=frontend_url)
+        run = run_broken_link_check(db)
         logger.info("[check_broken_links_job] run_id=%s status=%s broken=%d/%d",
                     run.id, run.status, run.broken_count, run.total_links)
     except Exception as exc:
@@ -563,7 +563,7 @@ def run_worker_loop(stop_event=None):
             elif job.get("type") == "crawl_listing":
                 crawl_listing(int(job["listing_id"]))
             elif job.get("type") == "check_broken_links":
-                check_broken_links_job(job.get("frontend_url"))
+                check_broken_links_job()
             else:
                 logger.warning("Unknown job type: %s", job.get("type"))
         except Exception as exc:

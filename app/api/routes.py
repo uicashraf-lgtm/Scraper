@@ -1605,21 +1605,14 @@ def list_broken_link_runs(limit: int = 50, db: Session = Depends(get_db)):
 
 
 @router.post("/admin/broken-links/run")
-def trigger_broken_link_check(frontend_url: str | None = None):
-    """Queue an immediate broken-link audit. If `frontend_url` is omitted, the
-    configured `FRONTEND_URL` env var is used."""
-    target = frontend_url or settings.frontend_url
-    if not target:
-        raise HTTPException(
-            status_code=400,
-            detail="No frontend_url provided and FRONTEND_URL env is not set.",
-        )
+def trigger_broken_link_check():
+    """Queue an immediate broken-link audit over every stored vendor listing URL."""
     from app.services.queue import enqueue_broken_link_check
     try:
-        enqueue_broken_link_check(target)
+        enqueue_broken_link_check()
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Redis unavailable: {exc}")
-    return {"ok": True, "message": "Broken-link audit queued", "frontend_url": target}
+    return {"ok": True, "message": "Broken-link audit queued"}
 
 
 @router.get("/stream/prices")

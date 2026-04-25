@@ -15,13 +15,10 @@ class Settings(BaseSettings):
     # Trustpilot rating refresh (per-vendor)
     trustpilot_refresh_hours: int = 72
 
-    # Broken-link audit on the public front page
-    # frontend_url: page to scrape for product/buy links (e.g. "https://mysite.com/")
-    # If unset, the scheduled audit is skipped silently.
-    frontend_url: str | None = None
-    broken_link_check_interval_hours: int = 72  # every 3 days
+    # Broken-link audit over stored vendor listings (every 3 days by default).
+    broken_link_check_interval_hours: int = 72
     broken_link_request_timeout: float = 15.0
-    broken_link_max_links: int = 1000
+    broken_link_max_links: int = 5000
 
     # Credential encryption key (32+ char string; stored in .env)
     secret_key: str = "changeme-please-set-in-dotenv-32c"
