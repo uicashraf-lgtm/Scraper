@@ -1295,14 +1295,26 @@ def delete_listing_variant(
     db: Session = Depends(get_db),
 ):
     """Remove a single dose from a listing and lock it so the scraper won't
-    re-insert it on the next crawl. Drops the matching wp_listing_variants
-    row and prunes the corresponding entry from variant_amounts."""
+    re-insert it on the next crawl.
+
+    Clears the dose wherever it's stored:
+      - matching wp_listing_variants rows
+      - listing.amount_mg / amount_unit when they match (the dose lives on the
+        listing itself for single-dose vendors that don't expose variations)
+      - the corresponding entry in variant_amounts JSON
+
+    If clearing the listing-level dose leaves the listing with no variants
+    and no dose at all, the listing is deleted entirely so it stops appearing
+    in product detail responses.
+    """
     listing = db.query(VendorListing).filter(VendorListing.id == listing_id).first()
     if not listing:
         raise HTTPException(status_code=404, detail="Listing not found")
 
     unit_norm = (unit or "mg").lower()
-    deleted = (
+    cleared = 0
+
+    var_rows_deleted = (
         db.query(ListingVariant)
         .filter(
             ListingVariant.listing_id == listing_id,
@@ -1311,6 +1323,18 @@ def delete_listing_variant(
         )
         .delete(synchronize_session=False)
     )
+    cleared += var_rows_deleted
+
+    listing_unit = (listing.amount_unit or "").lower()
+    if (
+        listing.amount_mg is not None
+        and abs(listing.amount_mg - dosage) < 1e-9
+        and listing_unit == unit_norm
+    ):
+        listing.amount_mg = None
+        listing.amount_unit = None
+        listing.price_per_mg = None
+        cleared += 1
 
     if listing.variant_amounts:
         try:
@@ -1323,9 +1347,36 @@ def delete_listing_variant(
         except Exception:
             pass
 
+    remaining_variants = (
+        db.query(ListingVariant).filter(ListingVariant.listing_id == listing_id).count()
+    )
+    listing_emptied = (
+        remaining_variants == 0
+        and listing.amount_mg is None
+        and not listing.variant_amounts
+    )
+
+    if listing_emptied:
+        db.query(ManualPriceOverride).filter(ManualPriceOverride.listing_id == listing_id).delete(synchronize_session=False)
+        db.query(PriceHistory).filter(PriceHistory.listing_id == listing_id).delete(synchronize_session=False)
+        db.query(CrawlLog).filter(CrawlLog.listing_id == listing_id).delete(synchronize_session=False)
+        db.delete(listing)
+        db.commit()
+        return {
+            "ok": True,
+            "listing_id": listing_id,
+            "deleted": max(cleared, 1),
+            "listing_deleted": True,
+        }
+
     listing.dose_locked = True
     db.commit()
-    return {"ok": True, "listing_id": listing_id, "deleted": deleted}
+    return {
+        "ok": True,
+        "listing_id": listing_id,
+        "deleted": cleared,
+        "listing_deleted": False,
+    }
 
 
 @router.patch("/admin/vendors/{vendor_id}/meta")
