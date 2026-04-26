@@ -364,14 +364,22 @@ def _enrich(result: ScrapeResult, soup: BeautifulSoup, html: str, hints: "Scrape
     return result
 
 
-def _maybe_extract_coa(result: ScrapeResult, soup: BeautifulSoup, url: str) -> None:
+def _maybe_extract_coa(result: ScrapeResult, soup: BeautifulSoup, url: str,
+                       hints: "ScrapeHints | None" = None) -> None:
     """Populate result.coa_documents from product images/PDFs, if enabled.
-    No-op when COA extraction is disabled or no useful docs are found."""
+    No-op when COA extraction is disabled or no useful docs are found.
+    Vendor session cookies/proxy/bypass from `hints` are forwarded so gated
+    files come back as the logged-in user."""
     if not result.ok or not settings.coa_extraction_enabled:
         return
     try:
         from app.scraper.coa_extractor import extract_for_listing
-        rows = extract_for_listing(soup, url)
+        rows = extract_for_listing(
+            soup, url,
+            cookies=hints.cookies if hints else None,
+            proxy_url=hints.proxy_url if hints else None,
+            bypass_strategy=hints.bypass_strategy if hints else None,
+        )
         result.coa_documents = [
             {
                 "source_url": cand.url,
@@ -409,7 +417,7 @@ def _extract_with_adapters(url: str, html: str, status_code: int | None, hints: 
                 adapter="vendor_hint",
             )
             result = _enrich(result, soup, html, hints=hints)
-            _maybe_extract_coa(result, soup, url)
+            _maybe_extract_coa(result, soup, url, hints=hints)
             return result
 
     adapters = adapter_chain(url, soup, html, platform=hints.platform if hints else None)
@@ -436,7 +444,7 @@ def _extract_with_adapters(url: str, html: str, status_code: int | None, hints: 
                 price_max=extracted.price_max,
             )
             result = _enrich(result, soup, html, hints=hints)
-            _maybe_extract_coa(result, soup, url)
+            _maybe_extract_coa(result, soup, url, hints=hints)
             return result
 
     # Also apply name_selector on failure (for logging/debug)

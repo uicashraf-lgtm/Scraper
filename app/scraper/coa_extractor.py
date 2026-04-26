@@ -133,21 +133,92 @@ def discover_coa_urls(
 
 # ---- download ------------------------------------------------------------
 
-def _download(url: str) -> tuple[bytes | None, str | None]:
-    """Return (bytes, content_type) or (None, None) on failure."""
+def _cookies_to_dict(cookies: list[dict] | None) -> dict[str, str]:
+    """Flatten Playwright-style cookies into a {name: value} dict for httpx.
+    Domain matching is left to the server — for our use case (PDFs hosted on
+    the same vendor domain) the cookie's name+value is enough."""
+    if not cookies:
+        return {}
+    out: dict[str, str] = {}
+    for c in cookies:
+        name = c.get("name")
+        val = c.get("value")
+        if name and val is not None:
+            out[name] = val
+    return out
+
+
+def _download_via_playwright(
+    url: str,
+    cookies: list[dict] | None,
+    proxy_url: str | None,
+    bypass_strategy: str | None,
+) -> tuple[bytes | None, str | None]:
+    """Fallback download path: use the same authenticated browser context that
+    fetch.py uses for HTML, so gated PDFs/images come back as the logged-in
+    user. Uses the request API (no full page render) for speed."""
     try:
-        resp = http_get_with_retry(
-            url,
-            headers={"User-Agent": settings.scraper_user_agent},
-            timeout=30.0,
-            max_retries=2,
-        )
-        if resp.status_code != 200 or not resp.content:
-            return None, None
-        return resp.content, (resp.headers.get("content-type") or "").lower()
-    except (httpx.HTTPError, Exception) as exc:  # broad: never break the crawl
-        logger.debug("coa download failed for %s: %s", url, exc)
+        from playwright.sync_api import sync_playwright
+    except ImportError:
         return None, None
+    try:
+        proxy = {"server": proxy_url} if proxy_url else None
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, proxy=proxy)
+            ctx = browser.new_context(user_agent=settings.scraper_user_agent)
+            if cookies:
+                ctx.add_cookies(cookies)
+            try:
+                resp = ctx.request.get(url, timeout=30000)
+                if not resp.ok:
+                    return None, None
+                content_type = (resp.headers.get("content-type") or "").lower()
+                return resp.body(), content_type
+            finally:
+                browser.close()
+    except Exception as exc:
+        logger.debug("playwright COA download failed for %s: %s", url, exc)
+        return None, None
+
+
+def _download(
+    url: str,
+    cookies: list[dict] | None = None,
+    proxy_url: str | None = None,
+    bypass_strategy: str | None = None,
+) -> tuple[bytes | None, str | None]:
+    """Return (bytes, content_type) or (None, None) on failure.
+
+    Strategy:
+      1. httpx with vendor cookies (if any) and proxy — fast, handles most PDFs.
+      2. Playwright with the same auth context — handles vendors that gate file
+         downloads behind JS-set cookies, signed URLs, or Cloudflare.
+    """
+    headers = {"User-Agent": settings.scraper_user_agent}
+    cookie_jar = _cookies_to_dict(cookies)
+    proxies = {"http://": proxy_url, "https://": proxy_url} if proxy_url else None
+
+    try:
+        if cookie_jar or proxies:
+            with httpx.Client(timeout=30.0, follow_redirects=True, headers=headers,
+                              cookies=cookie_jar, proxies=proxies) as client:
+                resp = client.get(url)
+        else:
+            resp = http_get_with_retry(url, headers=headers, timeout=30.0, max_retries=2)
+        if resp.status_code == 200 and resp.content:
+            return resp.content, (resp.headers.get("content-type") or "").lower()
+        # 401/403/503 likely means the file is gated — fall through to Playwright
+        if cookies and resp.status_code in (401, 403, 503):
+            logger.debug("COA gated via httpx (status=%d) — retrying via Playwright: %s",
+                         resp.status_code, url)
+        else:
+            return None, None
+    except (httpx.HTTPError, Exception) as exc:
+        logger.debug("httpx COA download failed for %s: %s — trying Playwright", url, exc)
+
+    if cookies or bypass_strategy:
+        return _download_via_playwright(url, cookies, proxy_url, bypass_strategy)
+    return None, None
 
 
 # ---- text extractors -----------------------------------------------------
@@ -369,11 +440,22 @@ def parse_peptide_fields(text: str) -> CoaData:
 
 # ---- top-level entry points ---------------------------------------------
 
-def extract_from_url(url: str, source_type: str) -> tuple[CoaData, bytes] | None:
+def extract_from_url(
+    url: str,
+    source_type: str,
+    *,
+    cookies: list[dict] | None = None,
+    proxy_url: str | None = None,
+    bypass_strategy: str | None = None,
+) -> tuple[CoaData, bytes] | None:
     """Download `url`, run the appropriate extractor, parse fields.
     Returns (CoaData, raw_bytes) so the caller can hash the bytes for dedup;
-    returns None if the document couldn't be downloaded at all."""
-    data, content_type = _download(url)
+    returns None if the document couldn't be downloaded at all.
+
+    Auth params mirror ScrapeHints — vendor session cookies, proxy, and
+    bypass strategy are reused so gated files come back as the logged-in user."""
+    data, content_type = _download(url, cookies=cookies, proxy_url=proxy_url,
+                                   bypass_strategy=bypass_strategy)
     if data is None:
         return None
 
@@ -407,12 +489,23 @@ def extract_from_url(url: str, source_type: str) -> tuple[CoaData, bytes] | None
     return empty, data
 
 
-def extract_for_listing(soup: BeautifulSoup, base_url: str) -> list[tuple[CoaCandidate, CoaData, str]]:
+def extract_for_listing(
+    soup: BeautifulSoup,
+    base_url: str,
+    *,
+    cookies: list[dict] | None = None,
+    proxy_url: str | None = None,
+    bypass_strategy: str | None = None,
+) -> list[tuple[CoaCandidate, CoaData, str]]:
     """Convenience: discover candidates, extract each, return rows ready for
-    persistence. Each row: (candidate, coa_data, sha256_hex)."""
+    persistence. Each row: (candidate, coa_data, sha256_hex). Auth params are
+    forwarded to the downloader for vendors that gate their COA files."""
     rows: list[tuple[CoaCandidate, CoaData, str]] = []
     for cand in discover_coa_urls(soup, base_url):
-        result = extract_from_url(cand.url, cand.source_type)
+        result = extract_from_url(
+            cand.url, cand.source_type,
+            cookies=cookies, proxy_url=proxy_url, bypass_strategy=bypass_strategy,
+        )
         if result is None:
             continue
         coa, raw = result
