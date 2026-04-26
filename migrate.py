@@ -73,5 +73,5 @@ with engine.begin() as conn:
 
 # create_all only creates tables that don't exist yet — safe to call
 Base.metadata.create_all(bind=engine)
-print("  + wp_product_tags, wp_vendor_sessions, wp_scheduled_crawls (created if missing)")
+print("  + wp_product_tags, wp_vendor_sessions, wp_scheduled_crawls, wp_coa_documents (created if missing)")
 print("\nMigration complete.")

@@ -224,6 +224,27 @@ class BrokenLinkRun(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class CoaDocument(Base):
+    """Peptide data extracted from a COA / spec sheet (image or PDF) attached to a listing."""
+    __tablename__ = "wp_coa_documents"
+    __table_args__ = (Index("uq_coa_listing_source", "listing_id", "source_hash", unique=True),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    listing_id: Mapped[int] = mapped_column(ForeignKey("wp_vendor_listings.id"), nullable=False, index=True)
+    source_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(16), nullable=False)  # "pdf" | "image"
+    source_hash: Mapped[str] = mapped_column(String(64), nullable=False)  # sha256 of the bytes — dedup key
+    extractor: Mapped[str] = mapped_column(String(32), nullable=False)    # "pdf_text"|"tesseract"|"vision_llm"
+    purity_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    content_mg: Mapped[float | None] = mapped_column(Float, nullable=True)   # net peptide content
+    content_unit: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    molecular_weight: Mapped[float | None] = mapped_column(Float, nullable=True)  # Da / g/mol
+    sequence: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    raw_text: Mapped[str | None] = mapped_column(Text, nullable=True)  # truncated OCR/extracted text for debugging
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)  # 0.0-1.0; null when unknown
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class BrokenLinkCheck(Base):
     """One row per product link found on the front page (upserted each run)."""
     __tablename__ = "wp_broken_link_checks"

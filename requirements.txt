@@ -9,3 +9,8 @@ beautifulsoup4==4.13.5
 python-dateutil==2.9.0.post0
 playwright==1.55.0
 cryptography==43.0.3
+# COA / spec-sheet extraction (optional — only used when COA_EXTRACTION_ENABLED=true).
+# pytesseract additionally requires the system 'tesseract' binary to be installed.
+pdfplumber==0.11.4
+pytesseract==0.3.13
+Pillow==10.4.0

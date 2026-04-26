@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     # CapSolver API key for CAPTCHA solving (optional; set in .env to enable)
     capsolver_api_key: str | None = None
 
+    # COA / spec-sheet extraction from product PDFs and images (purity, mass, content).
+    # Off by default — extraction downloads + OCRs each candidate document so it adds
+    # noticeable latency and CPU cost per listing. Enable per-deploy when desired.
+    coa_extraction_enabled: bool = False
+    coa_max_documents_per_listing: int = 4
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 

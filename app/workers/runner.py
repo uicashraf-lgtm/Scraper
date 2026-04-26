@@ -3,7 +3,7 @@ import logging
 from datetime import datetime
 
 from app.db.session import SessionLocal
-from app.models.entities import ListingVariant, PriceHistory, ProductTag, Vendor, VendorListing, VendorTargetURL
+from app.models.entities import CoaDocument, ListingVariant, PriceHistory, ProductTag, Vendor, VendorListing, VendorTargetURL
 from app.scraper.discovery import discover_product_urls
 from app.scraper.fetch import ScrapeHints, ScrapeResult, scrape_url
 from app.services.pricing import create_crawl_log, is_blocked_response, maybe_raise_block_alert
@@ -89,6 +89,42 @@ def _persist_variants(db, listing_id: int, variants: list[dict]):
                 in_stock=v.get("in_stock"),
             ))
     db.flush()
+
+
+def _persist_coa_documents(db, listing_id: int, docs: list[dict]) -> int:
+    """Insert any new COA rows; skip docs whose source_hash already exists for
+    this listing (so we don't re-store the same PDF every crawl). Returns the
+    number of new rows added."""
+    if not docs:
+        return 0
+    inserted = 0
+    for d in docs:
+        sha = d.get("source_hash")
+        if not sha:
+            continue
+        exists = (
+            db.query(CoaDocument)
+            .filter(CoaDocument.listing_id == listing_id, CoaDocument.source_hash == sha)
+            .first()
+        )
+        if exists:
+            continue
+        db.add(CoaDocument(
+            listing_id=listing_id,
+            source_url=d["source_url"][:2048],
+            source_type=d["source_type"],
+            source_hash=sha,
+            extractor=d.get("extractor") or "unknown",
+            purity_pct=d.get("purity_pct"),
+            content_mg=d.get("content_mg"),
+            content_unit=d.get("content_unit"),
+            molecular_weight=d.get("molecular_weight"),
+            sequence=d.get("sequence"),
+            raw_text=d.get("raw_text"),
+            confidence=d.get("confidence"),
+        ))
+        inserted += 1
+    return inserted
 
 
 def _persist_tags(db, canonical_product_id: int, tags: list[str]):
@@ -436,6 +472,14 @@ def crawl_listing(listing_id: int):
                     {"dosage": v.dosage, "unit": v.unit, "price": v.price, "in_stock": v.in_stock}
                     for v in result.variants
                 ])
+
+            # Persist any peptide-data documents (purity / mass / content) extracted
+            # from product images or PDFs on the page.
+            if getattr(result, "coa_documents", None):
+                added = _persist_coa_documents(db, listing.id, result.coa_documents)
+                if added:
+                    logger.info("[crawl_listing] COA docs persisted listing_id=%d added=%d",
+                                listing.id, added)
 
             if result.product_name:
                 listing.vendor_product_name = result.product_name

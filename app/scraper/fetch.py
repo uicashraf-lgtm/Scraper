@@ -59,6 +59,11 @@ class ScrapeResult:
     # Structured variants with per-variant price (from AdapterResult.variants)
     variants: list = field(default_factory=list)
     price_max: float | None = None
+    # COA / spec-sheet documents extracted from product images/PDFs.
+    # Each entry: {"source_url", "source_type", "source_hash", "extractor",
+    #              "purity_pct", "content_mg", "content_unit", "molecular_weight",
+    #              "sequence", "raw_text", "confidence"}
+    coa_documents: list = field(default_factory=list)
 
 
 def looks_blocked(status_code: int | None, body: str | None) -> bool:
@@ -359,6 +364,42 @@ def _enrich(result: ScrapeResult, soup: BeautifulSoup, html: str, hints: "Scrape
     return result
 
 
+def _maybe_extract_coa(result: ScrapeResult, soup: BeautifulSoup, url: str,
+                       hints: "ScrapeHints | None" = None) -> None:
+    """Populate result.coa_documents from product images/PDFs, if enabled.
+    No-op when COA extraction is disabled or no useful docs are found.
+    Vendor session cookies/proxy/bypass from `hints` are forwarded so gated
+    files come back as the logged-in user."""
+    if not result.ok or not settings.coa_extraction_enabled:
+        return
+    try:
+        from app.scraper.coa_extractor import extract_for_listing
+        rows = extract_for_listing(
+            soup, url,
+            cookies=hints.cookies if hints else None,
+            proxy_url=hints.proxy_url if hints else None,
+            bypass_strategy=hints.bypass_strategy if hints else None,
+        )
+        result.coa_documents = [
+            {
+                "source_url": cand.url,
+                "source_type": cand.source_type,
+                "source_hash": sha,
+                "extractor": coa.extractor or "unknown",
+                "purity_pct": coa.purity_pct,
+                "content_mg": coa.content_mg,
+                "content_unit": coa.content_unit,
+                "molecular_weight": coa.molecular_weight,
+                "sequence": coa.sequence,
+                "raw_text": coa.raw_text,
+                "confidence": coa.confidence,
+            }
+            for cand, coa, sha in rows[: settings.coa_max_documents_per_listing]
+        ]
+    except Exception as exc:
+        logger.debug("COA extraction skipped for %s: %s", url, exc)
+
+
 def _extract_with_adapters(url: str, html: str, status_code: int | None, hints: "ScrapeHints | None" = None) -> ScrapeResult:
     soup = BeautifulSoup(html, "html.parser")
 
@@ -375,7 +416,9 @@ def _extract_with_adapters(url: str, html: str, status_code: int | None, hints: 
                 body_excerpt=html[:2000],
                 adapter="vendor_hint",
             )
-            return _enrich(result, soup, html, hints=hints)
+            result = _enrich(result, soup, html, hints=hints)
+            _maybe_extract_coa(result, soup, url, hints=hints)
+            return result
 
     adapters = adapter_chain(url, soup, html, platform=hints.platform if hints else None)
     for adapter in adapters:
@@ -400,7 +443,9 @@ def _extract_with_adapters(url: str, html: str, status_code: int | None, hints: 
                 variants=extracted.variants or [],
                 price_max=extracted.price_max,
             )
-            return _enrich(result, soup, html, hints=hints)
+            result = _enrich(result, soup, html, hints=hints)
+            _maybe_extract_coa(result, soup, url, hints=hints)
+            return result
 
     # Also apply name_selector on failure (for logging/debug)
     title = soup.title.string.strip() if soup.title and soup.title.string else None
