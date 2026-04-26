@@ -230,7 +230,10 @@ class CoaDocument(Base):
     __table_args__ = (Index("uq_coa_listing_source", "listing_id", "source_hash", unique=True),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    listing_id: Mapped[int] = mapped_column(ForeignKey("wp_vendor_listings.id"), nullable=False, index=True)
+    # Plain Integer (not ForeignKey) — wp_vendor_listings is MyISAM in this DB,
+    # and InnoDB→MyISAM foreign keys aren't allowed, so create_all blows up if
+    # an FK clause is emitted. Same approach as ListingVariant.listing_id.
+    listing_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     source_url: Mapped[str] = mapped_column(String(2048), nullable=False)
     source_type: Mapped[str] = mapped_column(String(16), nullable=False)  # "pdf" | "image"
     source_hash: Mapped[str] = mapped_column(String(64), nullable=False)  # sha256 of the bytes — dedup key
