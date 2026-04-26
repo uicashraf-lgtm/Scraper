@@ -1343,9 +1343,22 @@ def delete_listing_variant(
                 amt_label = f"{int(dosage)} {unit_norm}" if dosage == int(dosage) else f"{dosage} {unit_norm}"
                 target = _normalize_variant_label(amt_label)
                 pruned = [e for e in raw_va if _normalize_variant_label(str(e)) != target]
-                listing.variant_amounts = json.dumps(pruned) if pruned else None
+                if len(pruned) != len(raw_va):
+                    cleared += 1
+                    listing.variant_amounts = json.dumps(pruned) if pruned else None
         except Exception:
             pass
+
+    if cleared == 0:
+        # Nothing matched anywhere — keep the listing untouched (don't lock,
+        # don't delete). Frontend can show "nothing changed" honestly.
+        db.rollback()
+        return {
+            "ok": True,
+            "listing_id": listing_id,
+            "deleted": 0,
+            "listing_deleted": False,
+        }
 
     remaining_variants = (
         db.query(ListingVariant).filter(ListingVariant.listing_id == listing_id).count()
@@ -1365,7 +1378,7 @@ def delete_listing_variant(
         return {
             "ok": True,
             "listing_id": listing_id,
-            "deleted": max(cleared, 1),
+            "deleted": cleared,
             "listing_deleted": True,
         }
 
