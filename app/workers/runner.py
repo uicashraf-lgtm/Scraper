@@ -93,6 +93,64 @@ def _persist_variants(db, listing_id: int, variants: list[dict]):
     db.flush()
 
 
+def _enrich_listing_with_coa(db, vendor: Vendor, listing_id: int, product_url: str) -> None:
+    """For API-path crawls (no HTML scrape), fetch the product page once and run
+    COA discovery + extraction on it. No-op when extraction is disabled.
+
+    The WC REST/Store API responses don't expose certificate-of-analysis docs,
+    so without this extra fetch the API path would silently skip COA extraction
+    for every vendor that uses it. Cost: one HTTP request per listing when the
+    flag is on. Failures are non-fatal — the price update is already committed."""
+    from app.core.config import settings
+    if not settings.coa_extraction_enabled or not product_url:
+        return
+    try:
+        from app.scraper.coa_extractor import extract_for_listing
+        from app.scraper.fetch import ScrapeHints, fetch_page
+        from app.scraper.session_manager import load_session
+        from bs4 import BeautifulSoup
+
+        cookies = load_session(db, vendor.id) if vendor.login_email else None
+        hints = ScrapeHints(
+            cookies=cookies,
+            proxy_url=vendor.proxy_url,
+            bypass_strategy=vendor.bypass_strategy,
+            popup_close_selector=vendor.popup_close_selector,
+        )
+        _status, html, _err = fetch_page(product_url, hints=hints)
+        if not html:
+            logger.debug("[coa_api_path] fetch returned no HTML for %s", product_url)
+            return
+
+        soup = BeautifulSoup(html, "html.parser")
+        rows = extract_for_listing(
+            soup, product_url,
+            cookies=cookies, proxy_url=vendor.proxy_url, bypass_strategy=vendor.bypass_strategy,
+        )
+        docs = [
+            {
+                "source_url": cand.url,
+                "source_type": cand.source_type,
+                "source_hash": sha,
+                "extractor": coa.extractor or "unknown",
+                "purity_pct": coa.purity_pct,
+                "content_mg": coa.content_mg,
+                "content_unit": coa.content_unit,
+                "molecular_weight": coa.molecular_weight,
+                "sequence": coa.sequence,
+                "raw_text": coa.raw_text,
+                "confidence": coa.confidence,
+            }
+            for cand, coa, sha in rows[: settings.coa_max_documents_per_listing]
+        ]
+        added = _persist_coa_documents(db, listing_id, docs)
+        if added:
+            logger.info("[coa_api_path] persisted listing_id=%d added=%d url=%s",
+                        listing_id, added, product_url)
+    except Exception as exc:
+        logger.debug("[coa_api_path] skipped for %s: %s", product_url, exc)
+
+
 def _persist_coa_documents(db, listing_id: int, docs: list[dict]) -> int:
     """Insert any new COA rows; skip docs whose source_hash already exists for
     this listing (so we don't re-store the same PDF every crawl). Returns the
@@ -235,6 +293,12 @@ def _crawl_vendor_via_wc_api(db, vendor: Vendor, base_url_override: str | None =
             ))
 
         db.commit()
+
+        # API path doesn't see the rendered product page, so COA discovery
+        # never fires from the JSON. If extraction is enabled, do one HTML
+        # fetch per listing here and run the extractor on the post-render DOM.
+        _enrich_listing_with_coa(db, vendor, listing.id, data["url"])
+
         updated += 1
 
     logger.info("[crawl_vendor] WC API DONE for '%s' — %d/%d listings updated", vendor.name, updated, len(products))
@@ -482,6 +546,10 @@ def crawl_listing(listing_id: int):
                 if added:
                     logger.info("[crawl_listing] COA docs persisted listing_id=%d added=%d",
                                 listing.id, added)
+            elif result.adapter == "wc_store_api" and vendor:
+                # Store API hit means we never fetched HTML, so coa_documents is empty.
+                # Run the API-path enricher to fetch the product page once and extract.
+                _enrich_listing_with_coa(db, vendor, listing.id, listing.url)
 
             if result.product_name:
                 listing.vendor_product_name = result.product_name
