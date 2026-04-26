@@ -1287,6 +1287,47 @@ def clear_variant_amounts(listing_id: int, db: Session = Depends(get_db)):
     return {"ok": True, "listing_id": listing_id}
 
 
+@router.delete("/admin/listings/{listing_id}/variants")
+def delete_listing_variant(
+    listing_id: int,
+    dosage: float,
+    unit: str = "mg",
+    db: Session = Depends(get_db),
+):
+    """Remove a single dose from a listing and lock it so the scraper won't
+    re-insert it on the next crawl. Drops the matching wp_listing_variants
+    row and prunes the corresponding entry from variant_amounts."""
+    listing = db.query(VendorListing).filter(VendorListing.id == listing_id).first()
+    if not listing:
+        raise HTTPException(status_code=404, detail="Listing not found")
+
+    unit_norm = (unit or "mg").lower()
+    deleted = (
+        db.query(ListingVariant)
+        .filter(
+            ListingVariant.listing_id == listing_id,
+            ListingVariant.dosage == dosage,
+            ListingVariant.unit == unit_norm,
+        )
+        .delete(synchronize_session=False)
+    )
+
+    if listing.variant_amounts:
+        try:
+            raw_va = json.loads(listing.variant_amounts)
+            if isinstance(raw_va, list):
+                amt_label = f"{int(dosage)} {unit_norm}" if dosage == int(dosage) else f"{dosage} {unit_norm}"
+                target = _normalize_variant_label(amt_label)
+                pruned = [e for e in raw_va if _normalize_variant_label(str(e)) != target]
+                listing.variant_amounts = json.dumps(pruned) if pruned else None
+        except Exception:
+            pass
+
+    listing.dose_locked = True
+    db.commit()
+    return {"ok": True, "listing_id": listing_id, "deleted": deleted}
+
+
 @router.patch("/admin/vendors/{vendor_id}/meta")
 def update_vendor_meta(vendor_id: int, payload: VendorMetaPatch, db: Session = Depends(get_db)):
     vendor = db.query(Vendor).filter(Vendor.id == vendor_id).first()
