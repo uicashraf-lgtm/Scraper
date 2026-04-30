@@ -735,6 +735,8 @@ def list_all_products(db: Session = Depends(get_db)):
         m = _re.match(r'^(\d+(?:\.\d+)?(?:mg|mcg|ug|g|iu|ml))', s)
         if m:
             s = m.group(1)
+        elif _re.fullmatch(r'\d+(?:\.\d+)?', s):
+            s = f"{s}mg"
         # Insert space between number and unit for display: "6mg" → "6 mg"
         return _re.sub(r'(\d)([a-z])', r'\1 \2', s)
 
