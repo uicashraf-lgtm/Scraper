@@ -894,11 +894,11 @@ def list_all_products(db: Session = Depends(get_db)):
                     "amount_unit": (l.amount_unit or "mg").lower(),
                     "price_per_mg": (price / amt_mg) if (price and amt_mg) else l.price_per_mg,
                 }
-                if lbl not in dosage_map:
-                    dosage_map[lbl] = {}
-                prev = dosage_map[lbl].get(v.name)
+                if norm_lbl not in dosage_map:
+                    dosage_map[norm_lbl] = {}
+                prev = dosage_map[norm_lbl].get(v.name)
                 if prev is None or (price is not None and (prev["price"] is None or price < prev["price"])):
-                    dosage_map[lbl][v.name] = vendor_entry
+                    dosage_map[norm_lbl][v.name] = vendor_entry
 
         available_dosages = [
             {
