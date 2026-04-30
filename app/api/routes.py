@@ -1266,6 +1266,13 @@ def patch_listing(listing_id: int, payload: ListingPatch, db: Session = Depends(
             amt = payload.amount_mg
             lbl = f"{int(amt)} {unit}" if amt == int(amt) else f"{amt} {unit}"
             listing.variant_amounts = _json.dumps([lbl])
+            # Drop stale per-dose variant rows so other endpoints don't surface
+            # the pre-override doses (e.g. listing previously had 10mg/20mg
+            # variants, now locked to 5mg).
+            db.query(ListingVariant).filter(
+                ListingVariant.listing_id == listing_id,
+                ListingVariant.dosage != payload.amount_mg,
+            ).delete(synchronize_session=False)
         if payload.amount_unit is not None:
             listing.amount_unit = payload.amount_unit
             listing.dose_locked = True
