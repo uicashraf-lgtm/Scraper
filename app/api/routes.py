@@ -735,6 +735,8 @@ def list_all_products(db: Session = Depends(get_db)):
         m = _re.match(r'^(\d+(?:\.\d+)?(?:mg|mcg|ug|g|iu|ml))', s)
         if m:
             s = m.group(1)
+        elif _re.fullmatch(r'\d+(?:\.\d+)?', s):
+            s = f"{s}mg"
         # Insert space between number and unit for display: "6mg" → "6 mg"
         return _re.sub(r'(\d)([a-z])', r'\1 \2', s)
 
@@ -892,11 +894,11 @@ def list_all_products(db: Session = Depends(get_db)):
                     "amount_unit": (l.amount_unit or "mg").lower(),
                     "price_per_mg": (price / amt_mg) if (price and amt_mg) else l.price_per_mg,
                 }
-                if lbl not in dosage_map:
-                    dosage_map[lbl] = {}
-                prev = dosage_map[lbl].get(v.name)
+                if norm_lbl not in dosage_map:
+                    dosage_map[norm_lbl] = {}
+                prev = dosage_map[norm_lbl].get(v.name)
                 if prev is None or (price is not None and (prev["price"] is None or price < prev["price"])):
-                    dosage_map[lbl][v.name] = vendor_entry
+                    dosage_map[norm_lbl][v.name] = vendor_entry
 
         available_dosages = [
             {
