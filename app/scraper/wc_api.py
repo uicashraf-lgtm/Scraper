@@ -338,11 +338,12 @@ def _store_price(prices: dict) -> float | None:
     minor_unit = prices.get("currency_minor_unit", 2)
     divisor = 10 ** minor_unit
 
-    # Variable product: use min price from price_range
+    raw = None
     pr = prices.get("price_range")
     if pr:
         raw = pr.get("min_amount") or pr.get("max_amount")
-    else:
+    # Fall back to flat price when price_range is absent or has null amounts
+    if raw is None:
         raw = prices.get("price") or prices.get("regular_price")
 
     try:
