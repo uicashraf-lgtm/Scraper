@@ -31,7 +31,7 @@ def _IS_AMOUNT_ATTR(name: str) -> bool:
     # Molecular Weight / Molecular Formula are chemistry metadata, not dosages.
     if "molecular" in n:
         return False
-    return any(k in n for k in ("mg", "weight", "dose", "dosage", "size", "amount", "variant", "strength", "content"))
+    return any(k in n for k in ("mg", "weight", "dose", "dosage", "size", "amount", "variant", "variation", "strength", "content"))
 
 
 def _clean_dosage_label(label: str) -> str:

@@ -145,7 +145,7 @@ def _is_amount_attr(name: str) -> bool:
     name = name.lower()
     if "molecular" in name:
         return False
-    return any(k in name for k in ("mg", "weight", "dose", "dosage", "size", "amount", "variant", "strength"))
+    return any(k in name for k in ("mg", "weight", "dose", "dosage", "size", "amount", "variant", "variation", "strength"))
 
 
 def _extract_variations_prices(soup: BeautifulSoup) -> tuple[float | None, float | None, list[str], list[VariantData]]:
