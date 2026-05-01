@@ -82,7 +82,12 @@ def _persist_variants(db, listing_id: int, variants: list[dict]):
                     existing.in_stock = v["in_stock"]
     else:
         db.query(ListingVariant).filter(ListingVariant.listing_id == listing_id).delete()
+        seen: set[tuple] = set()
         for v in variants:
+            key = (v["dosage"], v.get("unit", "mg"))
+            if key in seen:
+                continue
+            seen.add(key)
             db.add(ListingVariant(
                 listing_id=listing_id,
                 dosage=v["dosage"],
