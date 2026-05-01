@@ -1017,7 +1017,20 @@ def product_prices(product_id: int, db: Session = Depends(get_db)):
         base = _effective_price_payload(db, l, v, product.name)
         variants = base.get("variants") or []
         if variants:
+            # When dose_locked, also emit an entry for the listing-level
+            # amount_mg so it shows up alongside the variant rows in the admin
+            # UI (otherwise editing one dose hides the listing-level dose from
+            # the editable list).
+            emitted_doses: set[float] = set()
+            if l.dose_locked and l.amount_mg is not None:
+                entry = dict(base)
+                entry["amount_mg"] = l.amount_mg
+                entry["amount_unit"] = l.amount_unit or "mg"
+                result.append(entry)
+                emitted_doses.add(float(l.amount_mg))
             for var in variants:
+                if float(var["dosage"]) in emitted_doses:
+                    continue
                 entry = dict(base)
                 entry["amount_mg"] = var["dosage"]
                 entry["amount_unit"] = var.get("unit") or "mg"
