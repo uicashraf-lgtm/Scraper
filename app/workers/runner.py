@@ -239,7 +239,12 @@ def _crawl_vendor_via_wc_api(db, vendor: Vendor, base_url_override: str | None =
 
     updated = 0
     for prod in products:
-        data = _process(prod)
+        try:
+            data = _process(prod)
+        except Exception as exc:
+            logger.error("[crawl_vendor] Product processing crashed for '%s': %s",
+                         prod.get("name", "?"), exc, exc_info=True)
+            continue
         if not data["url"]:
             logger.warning("[crawl_vendor] Product '%s' has no URL — skipping", data.get("name"))
             continue
