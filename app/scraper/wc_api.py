@@ -284,10 +284,15 @@ def process_wc_product(
 def fetch_wc_store_products(base_url: str) -> list[dict]:
     """
     Fetch all products via WooCommerce Store API (public, no authentication).
-    Endpoint: /wp-json/wc/store/v1/products
+    Tries /wp-json/wc/store/v1/products first; falls back to the legacy
+    /wp-json/wc/store/products path for older WooCommerce Blocks versions.
     Returns empty list if unavailable.
     """
-    endpoint = base_url.rstrip("/") + "/wp-json/wc/store/v1/products"
+    _ENDPOINTS = [
+        base_url.rstrip("/") + "/wp-json/wc/store/v1/products",
+        base_url.rstrip("/") + "/wp-json/wc/store/products",
+    ]
+    endpoint = _ENDPOINTS[0]
     all_products: list[dict] = []
     page = 1
 
@@ -299,6 +304,11 @@ def fetch_wc_store_products(base_url: str) -> list[dict]:
                 timeout=30,
             )
             logger.info("[wc_store] GET %s page=%d → HTTP %s", endpoint, page, resp.status_code)
+            if resp.status_code == 404 and endpoint == _ENDPOINTS[0]:
+                # v1 path not found — try the legacy Store API path
+                endpoint = _ENDPOINTS[1]
+                logger.info("[wc_store] v1 endpoint not found, retrying with legacy path: %s", endpoint)
+                continue
             if resp.status_code in (401, 403, 404):
                 logger.warning("[wc_store] Store API unavailable for %s (HTTP %s)", base_url, resp.status_code)
                 break
