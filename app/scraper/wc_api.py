@@ -17,6 +17,13 @@ logger = logging.getLogger(__name__)
 
 _AMOUNT_RE = re.compile(r'\d+(?:\.\d+)?\s*(?:mg|mcg|ug|g|iu|ml)\b(?!\s*/?\s*mol)', re.IGNORECASE)
 _SLUG_HYPHEN_RE = re.compile(r'(\d)-([a-zA-Z])')
+_HTML_TAG_RE = re.compile(r'<[^>]+>')
+# Matches "20mg Total", "Total: 20mg", "30 mg total" — for blend product descriptions
+_TOTAL_DOSE_RE = re.compile(
+    r'(?:total[:\s]+)?(\d+(?:\.\d+)?)\s*(mg|mcg|ug|g|iu|ml)\s*total\b'
+    r'|total\s*(?:blend\s*)?[:\-]?\s*(\d+(?:\.\d+)?)\s*(mg|mcg|ug|g|iu|ml)',
+    re.IGNORECASE,
+)
 # Detects blend labels like "10/3 mg", "5/5mg", "2.5 / 5 mg" — the first
 # number is the headline (matches what vendors advertise as the product dose).
 _BLEND_RE = re.compile(
@@ -506,6 +513,27 @@ def process_wc_store_product(product: dict, base_url: str | None = None) -> dict
         amount_mg, amount_unit = _parse_amount(text)
         if amount_mg is not None:
             break
+
+    # Fallback: extract total dose from description for blend products whose
+    # name contains no dose (e.g. "BPC/TB Blend (Wolverine)" with
+    # description heading "BPC-157 (10mg) + TB-500 (10mg) Blend | 20mg Total").
+    if amount_mg is None:
+        for field in ("short_description", "description"):
+            raw_html = product.get(field) or ""
+            if not raw_html:
+                continue
+            plain = _HTML_TAG_RE.sub(" ", raw_html)
+            m = _TOTAL_DOSE_RE.search(plain)
+            if m:
+                num = m.group(1) or m.group(3)
+                unit = m.group(2) or m.group(4)
+                if num:
+                    try:
+                        amount_mg = float(num)
+                        amount_unit = (unit or "mg").lower()
+                        break
+                    except ValueError:
+                        pass
 
     return {
         "url": url,
