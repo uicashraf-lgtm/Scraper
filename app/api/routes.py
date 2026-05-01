@@ -1285,6 +1285,7 @@ def patch_listing(listing_id: int, payload: ListingPatch, db: Session = Depends(
         # dose_locked is reserved for the listing-level single-dose path below.
     else:
         if payload.amount_mg is not None:
+            old_amount = listing.amount_mg
             listing.amount_mg = payload.amount_mg
             listing.dose_locked = True
             if listing.last_price and payload.amount_mg > 0:
@@ -1295,13 +1296,14 @@ def patch_listing(listing_id: int, payload: ListingPatch, db: Session = Depends(
             amt = payload.amount_mg
             lbl = f"{int(amt)} {unit}" if amt == int(amt) else f"{amt} {unit}"
             listing.variant_amounts = _json.dumps([lbl])
-            # Drop stale per-dose variant rows so other endpoints don't surface
-            # the pre-override doses (e.g. listing previously had 10mg/20mg
-            # variants, now locked to 5mg).
-            db.query(ListingVariant).filter(
-                ListingVariant.listing_id == listing_id,
-                ListingVariant.dosage != payload.amount_mg,
-            ).delete(synchronize_session=False)
+            # Drop only the variant row matching the OLD listing-level dose
+            # (the one being replaced). Sibling variants on multi-dose listings
+            # must survive — they represent other SKUs the vendor sells.
+            if old_amount is not None and abs(old_amount - payload.amount_mg) > 1e-9:
+                db.query(ListingVariant).filter(
+                    ListingVariant.listing_id == listing_id,
+                    ListingVariant.dosage == old_amount,
+                ).delete(synchronize_session=False)
         if payload.amount_unit is not None:
             listing.amount_unit = payload.amount_unit
             listing.dose_locked = True
