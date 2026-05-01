@@ -17,6 +17,12 @@ logger = logging.getLogger(__name__)
 
 _AMOUNT_RE = re.compile(r'\d+(?:\.\d+)?\s*(?:mg|mcg|ug|g|iu|ml)\b(?!\s*/?\s*mol)', re.IGNORECASE)
 _SLUG_HYPHEN_RE = re.compile(r'(\d)-([a-zA-Z])')
+# Detects blend labels like "10/3 mg", "5/5mg", "2.5 / 5 mg" — the first
+# number is the headline (matches what vendors advertise as the product dose).
+_BLEND_RE = re.compile(
+    r'(\d+(?:\.\d+)?)\s*/\s*\d+(?:\.\d+)?\s*(mg|mcg|ug|g|iu|ml)\b',
+    re.IGNORECASE,
+)
 
 
 def _IS_AMOUNT_ATTR(name: str) -> bool:
@@ -47,8 +53,19 @@ def _clean_dosage_label(label: str) -> str:
 
 
 def _parse_amount(text: str) -> tuple[float | None, str | None]:
-    """Parse '10 mg' or '10-mg' → (10.0, 'mg'). Returns (None, None) if no match."""
+    """Parse '10 mg' or '10-mg' → (10.0, 'mg'). Returns (None, None) if no match.
+
+    Blend labels of the form 'N/M unit' (e.g. '10/3 mg', '5/5 mg') resolve to
+    the first number — that's the headline dose vendors typically advertise.
+    Without this, the unit-anchored regex below would grab the second number
+    (e.g. '10/3 mg' → 3) and produce phantom variants.
+    """
     cleaned = _clean_dosage_label(text or "")
+
+    blend = _BLEND_RE.search(cleaned)
+    if blend:
+        return float(blend.group(1)), blend.group(2).lower()
+
     m = _AMOUNT_RE.search(cleaned)
     if not m:
         return None, None

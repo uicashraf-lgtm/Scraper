@@ -865,11 +865,28 @@ def list_all_products(db: Session = Depends(get_db)):
             elif l.variant_amounts:
                 try:
                     for raw_d in _json.loads(l.variant_amounts):
-                        for d in _split_dosage(str(raw_d)):
+                        s = str(raw_d)
+                        # Skip blend descriptions like
+                        # "50MG GHK-Cu + 10MG TB-500 = 70MG per vial" — the
+                        # individual tokens aren't purchasable variants.
+                        if "+" in s or "=" in s:
+                            continue
+                        for d in _split_dosage(s):
                             if d:
                                 labels.append(d)
                 except Exception:
                     pass
+                # If nothing in variant_amounts overlaps the listing's own
+                # amount_mg, the JSON is almost certainly stale or wrong
+                # (e.g. Orbitrex NAD+ 500mg with variant_amounts=["10 mg","20 mg"]).
+                # Trust amount_mg in that case.
+                if l.amount_mg is not None:
+                    unit = (l.amount_unit or "mg").lower()
+                    amt = l.amount_mg
+                    listing_lbl = f"{int(amt)} {unit}" if amt == int(amt) else f"{amt} {unit}"
+                    norm_listing = _normalize_dosage(listing_lbl)
+                    if labels and not any(_normalize_dosage(x) == norm_listing for x in labels):
+                        labels = [listing_lbl]
             if not labels and l.amount_mg is not None:
                 unit = (l.amount_unit or "mg").lower()
                 amt = l.amount_mg
@@ -1016,11 +1033,20 @@ def product_prices(product_id: int, db: Session = Depends(get_db)):
             if raw_va:
                 try:
                     for label in json.loads(raw_va):
-                        m = _AMT_RE.search(str(label))
+                        s = str(label)
+                        # Skip blend descriptions like "10MG A + 50MG B = 60MG per vial"
+                        if "+" in s or "=" in s:
+                            continue
+                        m = _AMT_RE.search(s)
                         if m:
-                            parsed_amounts.append((float(m.group(1)), m.group(2).lower(), str(label)))
+                            parsed_amounts.append((float(m.group(1)), m.group(2).lower(), s))
                 except Exception:
                     pass
+            # Discard parses that don't include the listing's own amount_mg —
+            # variant_amounts is almost certainly stale or wrong in that case.
+            if parsed_amounts and l.amount_mg is not None:
+                if not any(abs(amt - l.amount_mg) < 1e-9 for amt, _, _ in parsed_amounts):
+                    parsed_amounts = []
             if len(parsed_amounts) >= 2:
                 # Sort by dosage value so we can pair with price_min/price_max
                 parsed_amounts.sort(key=lambda x: x[0])
@@ -1253,7 +1279,10 @@ def patch_listing(listing_id: int, payload: ListingPatch, db: Session = Depends(
                 unit=unit,
                 price=None,
             ))
-        listing.dose_locked = True
+        # Note: do NOT set dose_locked here. The variant-label path edits one row
+        # of a multi-variant listing; setting dose_locked makes the renderer
+        # collapse the entire listing to amount_mg, hiding every other variant.
+        # dose_locked is reserved for the listing-level single-dose path below.
     else:
         if payload.amount_mg is not None:
             listing.amount_mg = payload.amount_mg
