@@ -231,12 +231,13 @@ class WooCommerceAdapter:
                                  price_max=max_price, category=category, tags=tags)
 
         # 3. Standard simple-product price selectors
+        # Sale (discount) price must come first: <ins> holds the active price,
+        # <del> holds the crossed-out original. Broad selectors like
+        # span.woocommerce-Price-amount or p.price return whichever price
+        # appears first in the DOM, which is always the <del> (original) price.
         price_text = read_text(soup, [
-            "p.price > .woocommerce-Price-amount",
-            ".price > ins .woocommerce-Price-amount",  # sale price takes priority
-            "span.woocommerce-Price-amount",
-            "p.price",
-            "div.summary p.price",
+            ".price ins .woocommerce-Price-amount",  # sale/discount price
+            ".price > .woocommerce-Price-amount",    # non-sale: direct child, never inside <del>
             "[itemprop='price']",
         ])
         if price_text:
