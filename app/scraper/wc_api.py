@@ -386,6 +386,33 @@ def _store_price(prices: dict) -> float | None:
         return None
 
 
+def _sale_price_from_html(price_html: str) -> float | None:
+    """Extract the active (discounted) price from WooCommerce price_html.
+
+    The Store API prices{} object returns the regular price even when on_sale=True.
+    The price_html always has the correct rendered price: the active/discounted price
+    is in an <ins> that is NOT nested inside a <del>.
+
+    Pattern:
+      <del>...<ins aria-hidden="true">$original</ins>...</del>
+      <ins><span class="woocommerce-Price-amount">$sale</span></ins>
+    """
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(price_html, "html.parser")
+    for ins in reversed(soup.find_all("ins")):
+        if ins.find_parent("del"):
+            continue
+        text = ins.get_text(" ", strip=True)
+        m = re.search(r'[\d,]+(?:\.\d{1,2})?', text)
+        if m:
+            try:
+                return float(m.group().replace(",", ""))
+            except ValueError:
+                pass
+    return None
+
+
 def _fetch_store_variation_prices(base_url: str, variations: list[dict]) -> list[dict]:
     """
     Fetch individual variation prices from the Store API.
@@ -451,6 +478,13 @@ def process_wc_store_product(product: dict, base_url: str | None = None) -> dict
     prices_obj = product.get("prices") or {}
     price = _store_price(prices_obj)
     currency = prices_obj.get("currency_code", "USD")
+
+    # The Store API prices{} object returns the regular_price even when on_sale=True.
+    # Parse the actual discount price from price_html instead.
+    if product.get("on_sale") and product.get("price_html"):
+        sale_price = _sale_price_from_html(product["price_html"])
+        if sale_price is not None:
+            price = sale_price
 
     variant_amounts: list[str] = []
     variants: list[dict] = []
