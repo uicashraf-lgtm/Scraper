@@ -314,6 +314,25 @@ def _fetch_store_api_nonce(base_url: str, cookie_header: str) -> str | None:
     return None
 
 
+def build_store_api_headers(base_url: str, cookies: list[dict]) -> dict | None:
+    """Build Cookie + Nonce headers from a session cookie list for Store API requests."""
+    nonce_entry = next((c for c in cookies if c.get("name") == "__wc_store_nonce__"), None)
+    nonce = nonce_entry["value"] if nonce_entry else None
+    cookie_str = "; ".join(
+        f"{c['name']}={c['value']}"
+        for c in cookies
+        if c.get("name") and c.get("value") and c.get("name") != "__wc_store_nonce__"
+    )
+    if not cookie_str:
+        return None
+    headers: dict = {"Cookie": cookie_str}
+    if not nonce:
+        nonce = _fetch_store_api_nonce(base_url, cookie_str)
+    if nonce:
+        headers["Nonce"] = nonce
+    return headers
+
+
 def fetch_wc_store_products(base_url: str, cookies: list[dict] | None = None) -> list[dict]:
     """
     Fetch all products via WooCommerce Store API.
@@ -335,24 +354,7 @@ def fetch_wc_store_products(base_url: str, cookies: list[dict] | None = None) ->
     all_products: list[dict] = []
     page = 1
 
-    req_headers: dict | None = None
-    if cookies:
-        # Pull the nonce stored by playwright_login (if present) before building
-        # the Cookie header — it must not be forwarded as an actual cookie value.
-        nonce_entry = next((c for c in cookies if c.get("name") == "__wc_store_nonce__"), None)
-        nonce = nonce_entry["value"] if nonce_entry else None
-
-        cookie_str = "; ".join(
-            f"{c['name']}={c['value']}"
-            for c in cookies
-            if c.get("name") and c.get("value") and c.get("name") != "__wc_store_nonce__"
-        )
-        if cookie_str:
-            req_headers = {"Cookie": cookie_str}
-            if not nonce:
-                nonce = _fetch_store_api_nonce(base_url, cookie_str)
-            if nonce:
-                req_headers["Nonce"] = nonce
+    req_headers: dict | None = build_store_api_headers(base_url, cookies) if cookies else None
 
     while True:
         try:
@@ -481,7 +483,7 @@ def _sale_price_from_html(price_html: str) -> float | None:
     return None
 
 
-def _fetch_store_variation_prices(base_url: str, variations: list[dict]) -> list[dict]:
+def _fetch_store_variation_prices(base_url: str, variations: list[dict], req_headers: dict | None = None) -> list[dict]:
     """
     Fetch individual variation prices from the Store API.
     Each variation dict has 'id' and 'attributes'.
@@ -499,7 +501,7 @@ def _fetch_store_variation_prices(base_url: str, variations: list[dict]) -> list
         fetched = False
         for endpoint in _var_endpoints:
             try:
-                resp = http_get_with_retry(endpoint, timeout=15, max_retries=2)
+                resp = http_get_with_retry(endpoint, headers=req_headers, timeout=15, max_retries=2)
                 if resp.status_code == 404 and endpoint == _var_endpoints[0]:
                     logger.info("[wc_store] Variation %d v1 not found, trying legacy path", vid)
                     continue
@@ -538,11 +540,12 @@ def _fetch_store_variation_prices(base_url: str, variations: list[dict]) -> list
     return results
 
 
-def process_wc_store_product(product: dict, base_url: str | None = None) -> dict:
+def process_wc_store_product(product: dict, base_url: str | None = None, req_headers: dict | None = None) -> dict:
     """
     Normalise a WooCommerce Store API product into a listing dict.
     Price encoding: integer string / 10**currency_minor_unit → float dollars.
     For variable products, fetches per-variation prices when base_url is provided.
+    req_headers: optional auth headers (Cookie + Nonce) forwarded to variation fetches.
     """
     name = product.get("name", "")
     url = product.get("permalink", "")
@@ -584,7 +587,7 @@ def process_wc_store_product(product: dict, base_url: str | None = None) -> dict
                         variant_amounts.append(label)
 
         logger.info("[wc_store] Fetching %d variation prices for '%s'", len(raw_variations), name)
-        var_details = _fetch_store_variation_prices(base_url, raw_variations)
+        var_details = _fetch_store_variation_prices(base_url, raw_variations, req_headers=req_headers)
 
         # Build price + stock lookups by variation ID
         var_price_map = {v["id"]: v["price"] for v in var_details}

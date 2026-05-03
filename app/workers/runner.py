@@ -220,11 +220,12 @@ def _crawl_vendor_via_wc_api(db, vendor: Vendor, base_url_override: str | None =
     base_url = base_url_override or vendor.base_url
 
     if use_store_api:
-        from app.scraper.wc_api import fetch_wc_store_products, process_wc_store_product
+        from app.scraper.wc_api import build_store_api_headers, fetch_wc_store_products, process_wc_store_product
         logger.info("[crawl_vendor] WC Store API for '%s' (%s) auth=%s", vendor.name, base_url, bool(cookies))
+        req_headers = build_store_api_headers(base_url, cookies) if cookies else None
         products = fetch_wc_store_products(base_url, cookies=cookies)
         def _process(prod):
-            return process_wc_store_product(prod, base_url=base_url)
+            return process_wc_store_product(prod, base_url=base_url, req_headers=req_headers)
     else:
         from app.scraper.wc_api import fetch_wc_products, process_wc_product
         ck = vendor.wc_consumer_key
@@ -474,12 +475,14 @@ def crawl_listing(listing_id: int):
         result: ScrapeResult | None = None
         cookies = None
         if vendor and vendor.wc_api_url and vendor.base_url:
-            from app.scraper.wc_api import fetch_wc_store_product_by_url, process_wc_store_product
+            from app.scraper.wc_api import build_store_api_headers, fetch_wc_store_product_by_url, process_wc_store_product
             from app.scraper.adapters.base import VariantData
             try:
+                _listing_cookies = _get_or_refresh_session(db, vendor) if vendor.login_email else None
+                _req_headers = build_store_api_headers(vendor.base_url, _listing_cookies) if _listing_cookies else None
                 prod = fetch_wc_store_product_by_url(listing.url, vendor.base_url)
                 if prod:
-                    data = process_wc_store_product(prod, base_url=vendor.base_url)
+                    data = process_wc_store_product(prod, base_url=vendor.base_url, req_headers=_req_headers)
                     if data and data.get("price") is not None:
                         result = ScrapeResult(
                             ok=True,
