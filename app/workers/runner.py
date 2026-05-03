@@ -67,6 +67,8 @@ def _persist_variants(db, listing_id: int, variants: list[dict]):
     if listing and listing.dose_locked:
         for v in variants:
             dosage = v["dosage"]
+            if dosage is None:
+                continue  # null-dosage rows have no place in a curated variant set
             unit = v.get("unit", "mg")
             existing = (
                 db.query(ListingVariant)
@@ -292,6 +294,33 @@ def _crawl_vendor_via_wc_api(db, vendor: Vendor, base_url_override: str | None =
                 canonical.category = data["category"]
             if data.get("tags"):
                 _persist_tags(db, canonical.id, data["tags"])
+
+        # Dedup: if this product has no dose and a dose_locked listing already exists
+        # for the same vendor + canonical product, this is the WC parent product page
+        # being returned alongside its variation — delete the null-amount duplicate.
+        if listing.canonical_product_id and listing.amount_mg is None:
+            dose_locked_primary = (
+                db.query(VendorListing)
+                .filter(
+                    VendorListing.vendor_id == vendor.id,
+                    VendorListing.canonical_product_id == listing.canonical_product_id,
+                    VendorListing.dose_locked.is_(True),
+                    VendorListing.amount_mg.isnot(None),
+                    VendorListing.id != listing.id,
+                )
+                .order_by(VendorListing.id)
+                .first()
+            )
+            if dose_locked_primary:
+                logger.info(
+                    "[crawl_vendor] DEDUP listing_id=%d (amount_mg=None) → dose_locked primary listing_id=%d "
+                    "(vendor=%d canonical=%d) — deleting null duplicate",
+                    listing.id, dose_locked_primary.id, vendor.id, listing.canonical_product_id,
+                )
+                db.delete(listing)
+                db.flush()
+                db.commit()
+                continue
 
         # Record price history only when price changes
         if old_price is None or abs((old_price or 0) - data["price"]) > 0.001:
@@ -582,6 +611,9 @@ def crawl_listing(listing_id: int):
 
             # Dedup: if another listing already exists for the same vendor + canonical product + dosage,
             # merge this result into that primary listing and delete the current duplicate URL listing.
+            # Also dedup when this listing has amount_mg=None but a dose_locked listing already covers
+            # the same vendor + canonical product — the null-amount entry is the WC parent product page.
+            primary = None
             if listing.canonical_product_id and listing.amount_mg is not None:
                 primary = (
                     db.query(VendorListing)
@@ -594,49 +626,62 @@ def crawl_listing(listing_id: int):
                     .order_by(VendorListing.id)
                     .first()
                 )
-                if primary:
-                    logger.info(
-                        "[crawl_listing] DEDUP listing_id=%d → merging into primary listing_id=%d "
-                        "(vendor=%d canonical=%d amount_mg=%s dose_locked=%s)",
-                        listing.id, primary.id, listing.vendor_id,
-                        listing.canonical_product_id, listing.amount_mg,
-                        primary.dose_locked,
+            elif listing.canonical_product_id and listing.amount_mg is None:
+                primary = (
+                    db.query(VendorListing)
+                    .filter(
+                        VendorListing.vendor_id == listing.vendor_id,
+                        VendorListing.canonical_product_id == listing.canonical_product_id,
+                        VendorListing.dose_locked.is_(True),
+                        VendorListing.amount_mg.isnot(None),
+                        VendorListing.id != listing.id,
                     )
-                    primary_old_price = primary.last_price
-                    primary.last_price = result.price
-                    primary.currency = listing.currency
-                    primary.in_stock = listing.in_stock
-                    # Respect dose_locked on the primary — never overwrite its
-                    # admin-saved dose or price_per_mg during a dedup merge.
-                    if not primary.dose_locked:
-                        primary.amount_unit = listing.amount_unit
-                        primary.price_per_mg = listing.price_per_mg
-                    elif primary.amount_mg and result.price:
-                        primary.price_per_mg = result.price / primary.amount_mg
-                    primary.variant_amounts = listing.variant_amounts
-                    primary.vendor_product_name = listing.vendor_product_name
-                    primary.last_fetched_at = listing.last_fetched_at
-                    primary.last_status = listing.last_status
-                    if primary_old_price is None or abs((primary_old_price or 0) - result.price) > 0.001:
-                        db.add(PriceHistory(
-                            listing_id=primary.id,
-                            source="crawler",
-                            price=result.price,
-                            currency=primary.currency or "USD",
-                        ))
-                    db.delete(listing)
-                    db.flush()
-                    create_crawl_log(
-                        db,
+                    .order_by(VendorListing.id)
+                    .first()
+                )
+            if primary:
+                logger.info(
+                    "[crawl_listing] DEDUP listing_id=%d → merging into primary listing_id=%d "
+                    "(vendor=%d canonical=%d amount_mg=%s dose_locked=%s)",
+                    listing.id, primary.id, listing.vendor_id,
+                    listing.canonical_product_id, listing.amount_mg,
+                    primary.dose_locked,
+                )
+                primary_old_price = primary.last_price
+                primary.last_price = result.price
+                primary.currency = listing.currency
+                primary.in_stock = listing.in_stock
+                # Respect dose_locked on the primary — never overwrite its
+                # admin-saved dose or price_per_mg during a dedup merge.
+                if not primary.dose_locked:
+                    primary.amount_unit = listing.amount_unit
+                    primary.price_per_mg = listing.price_per_mg
+                elif primary.amount_mg and result.price:
+                    primary.price_per_mg = result.price / primary.amount_mg
+                primary.variant_amounts = listing.variant_amounts
+                primary.vendor_product_name = listing.vendor_product_name
+                primary.last_fetched_at = listing.last_fetched_at
+                primary.last_status = listing.last_status
+                if primary_old_price is None or abs((primary_old_price or 0) - result.price) > 0.001:
+                    db.add(PriceHistory(
                         listing_id=primary.id,
-                        vendor_id=primary.vendor_id,
-                        status="ok",
-                        http_status=result.status_code,
-                        is_blocked=False,
-                        message=f"deduped from listing_id={listing_id}",
-                    )
-                    db.commit()
-                    return
+                        source="crawler",
+                        price=result.price,
+                        currency=primary.currency or "USD",
+                    ))
+                db.delete(listing)
+                db.flush()
+                create_crawl_log(
+                    db,
+                    listing_id=primary.id,
+                    vendor_id=primary.vendor_id,
+                    status="ok",
+                    http_status=result.status_code,
+                    is_blocked=False,
+                    message=f"deduped from listing_id={listing_id}",
+                )
+                db.commit()
+                return
 
             # Record price history only when price changes
             if old_price is None or abs((old_price or 0) - result.price) > 0.001:
