@@ -6,9 +6,46 @@ CAPTCHA challenges encountered during login are handled via captcha_solver.
 import logging
 from urllib.parse import urljoin
 
+import httpx
+
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _wp_login_direct(base_url: str, email: str, password: str) -> list[dict] | None:
+    """Log in via WordPress wp-login.php using a plain HTTP POST.
+
+    Faster and more reliable than Playwright form detection for standard
+    WordPress/WooCommerce sites — works regardless of how the site's frontend
+    is structured (custom landing pages, page builders, membership plugins).
+
+    Returns a list of cookie dicts containing wordpress_logged_in_* on success,
+    None if wp-login.php is unreachable or credentials are rejected.
+    """
+    login_url = base_url.rstrip("/") + "/wp-login.php"
+    try:
+        with httpx.Client(follow_redirects=True, timeout=20) as client:
+            client.cookies.set("wordpress_test_cookie", "WP Cookie check")
+            resp = client.post(login_url, data={
+                "log": email,
+                "pwd": password,
+                "wp-submit": "Log In",
+                "redirect_to": base_url.rstrip("/") + "/",
+                "testcookie": "1",
+            })
+            auth_cookies = [c for c in client.cookies.jar if "wordpress_logged_in" in c.name]
+            if auth_cookies:
+                logger.info("[login] wp-login.php SUCCESS for %s (%d cookies)", base_url, len(list(client.cookies.jar)))
+                return [
+                    {"name": c.name, "value": c.value, "domain": c.domain or base_url, "path": c.path or "/"}
+                    for c in client.cookies.jar
+                    if c.name and c.value
+                ]
+            logger.debug("[login] wp-login.php: no wordpress_logged_in cookie for %s (HTTP %s)", base_url, resp.status_code)
+    except Exception as exc:
+        logger.debug("[login] wp-login.php attempt failed for %s: %s", base_url, exc)
+    return None
 
 DEFAULT_LOGIN_PATH = "/my-account"
 
@@ -166,6 +203,16 @@ def playwright_login(
     except Exception as exc:
         logger.error("Failed to decrypt password for %s: %s", base_url, exc)
         return None
+
+    # Fast path: try wp-login.php directly before launching a browser.
+    # Works for standard WordPress/WooCommerce sites regardless of frontend
+    # structure (custom landing pages, membership plugins, page builders).
+    # Falls through to Playwright if the site doesn't use wp-login.php or
+    # the credentials are rejected there.
+    wp_cookies = _wp_login_direct(base_url, email, password)
+    if wp_cookies:
+        return wp_cookies
+    logger.info("[login] wp-login.php fast path failed for %s — falling back to Playwright", base_url)
 
     login_path = login_url_path or DEFAULT_LOGIN_PATH
     login_url = urljoin(base_url, login_path)
