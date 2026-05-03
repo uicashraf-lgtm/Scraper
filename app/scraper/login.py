@@ -48,30 +48,86 @@ def _try_selector_list(page, selectors: tuple[str, ...]):
     return None
 
 
-def _find_login_form_inputs(page):
-    """Find email/username and password inputs that belong to the same form.
+_LOGIN_FORM_SELECTORS = (
+    # WooCommerce login form (most specific — wins over register form on same page)
+    "form.woocommerce-form-login",
+    "form#loginform",
+    # Generic: any form whose action or id hints at login
+    "form[action*='login']",
+    "form[id*='login']",
+    "form[class*='login']",
+)
 
-    Pages that show a login box alongside a register/newsletter box have
-    multiple email inputs. This scans all forms for one that contains a
-    password field, then returns the email/username input within that same
-    form — avoiding accidental fills of signup-only forms.
+_REGISTER_FORM_SELECTORS = (
+    "form.woocommerce-form-register",
+    "form[action*='register']",
+    "form[id*='register']",
+    "form[class*='register']",
+    "form[action*='signup']",
+    "form[id*='signup']",
+    "form[class*='signup']",
+)
+
+_EMAIL_FIELD_SELECTORS = (
+    "input[name='log']",
+    "input[name='username']",
+    "input[name='email']",
+    "input[type='email']",
+    "input[id='username']",
+    "input[id='email']",
+)
+
+
+def _find_login_form_inputs(page):
+    """Find email/username and password inputs in the login form.
+
+    Priority order:
+    1. WooCommerce / known login-form selectors (avoids register/newsletter forms)
+    2. Any form with a password field that is NOT a known register form
+    3. Any form with a password field (last resort)
 
     Returns (email_el, pass_el) or (None, None) if no login form is found.
     """
     try:
+        # Pass 1: known login-form CSS selectors
+        for form_sel in _LOGIN_FORM_SELECTORS:
+            form = page.query_selector(form_sel)
+            if not form:
+                continue
+            pass_el = form.query_selector("input[type='password']")
+            if not pass_el or not pass_el.is_visible():
+                continue
+            for sel in _EMAIL_FIELD_SELECTORS:
+                email_el = form.query_selector(sel)
+                if email_el and email_el.is_visible():
+                    return email_el, pass_el
+
+        # Collect forms that look like register forms so we can skip them
+        register_forms = set()
+        for reg_sel in _REGISTER_FORM_SELECTORS:
+            el = page.query_selector(reg_sel)
+            if el:
+                register_forms.add(el)
+
+        # Pass 2: any form with a password field that isn't a register form
         forms = page.query_selector_all("form")
+        for form in forms:
+            if form in register_forms:
+                continue
+            pass_el = form.query_selector("input[type='password']")
+            if not pass_el or not pass_el.is_visible():
+                continue
+            for sel in _EMAIL_FIELD_SELECTORS:
+                email_el = form.query_selector(sel)
+                if email_el and email_el.is_visible():
+                    return email_el, pass_el
+
+        # Pass 3: last resort — any form with a password field
         for form in forms:
             pass_el = form.query_selector("input[type='password']")
             if not pass_el or not pass_el.is_visible():
                 continue
-            for sel in (
-                "input[name='log']",
-                "input[name='username']",
-                "input[name='email']",
-                "input[type='email']",
-                "input[id='username']",
-                "input[id='email']",
-            ):
+            for sel in _EMAIL_FIELD_SELECTORS:
                 email_el = form.query_selector(sel)
                 if email_el and email_el.is_visible():
                     return email_el, pass_el
@@ -190,6 +246,29 @@ def playwright_login(
             page.wait_for_timeout(1000)
 
             cookies = ctx.cookies()
+
+            # While the browser is still open and authenticated, navigate to the
+            # homepage to extract the WooCommerce Store API nonce. This nonce is
+            # required alongside session cookies to pass WordPress REST auth checks.
+            try:
+                page.goto(base_url.rstrip("/") + "/", wait_until="domcontentloaded", timeout=15000)
+                nonce = page.evaluate(
+                    "() => (window.wcSettings || {}).storeApiNonce "
+                    "|| (window.wc_store_api_settings || {}).nonce || null"
+                )
+                if nonce:
+                    logger.info("[login] Extracted storeApiNonce from authenticated session")
+                    cookies.append({
+                        "name": "__wc_store_nonce__",
+                        "value": str(nonce),
+                        "domain": base_url,
+                        "path": "/",
+                    })
+                else:
+                    logger.debug("[login] storeApiNonce not found in page JS for %s", base_url)
+            except Exception as exc:
+                logger.debug("[login] Could not extract nonce for %s: %s", base_url, exc)
+
             browser.close()
 
             if not cookies:
