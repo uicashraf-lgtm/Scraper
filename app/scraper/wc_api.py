@@ -281,11 +281,50 @@ def process_wc_product(
 
 # ─── WooCommerce Store API (public, no auth) ──────────────────────────────────
 
-def fetch_wc_store_products(base_url: str) -> list[dict]:
+_STORE_NONCE_RE = re.compile(
+    r'"storeApiNonce"\s*:\s*"([a-f0-9]+)"'
+    r'|"wc_store_api_nonce"\s*:\s*"([a-f0-9]+)"',
+    re.IGNORECASE,
+)
+
+
+def _fetch_store_api_nonce(base_url: str, cookie_header: str) -> str | None:
+    """Fetch the wc_store_api nonce embedded in the site's homepage JS.
+
+    WordPress cookie auth for the Store API requires a matching nonce in the
+    Nonce header alongside the session cookies — without it the request is
+    treated as unauthenticated even when cookies are valid.
     """
-    Fetch all products via WooCommerce Store API (public, no authentication).
+    try:
+        resp = http_get_with_retry(
+            base_url.rstrip("/") + "/",
+            headers={"Cookie": cookie_header},
+            timeout=15,
+            max_retries=1,
+        )
+        if resp.status_code == 200:
+            m = _STORE_NONCE_RE.search(resp.text)
+            if m:
+                nonce = m.group(1) or m.group(2)
+                logger.info("[wc_store] Extracted storeApiNonce from homepage: %s", nonce)
+                return nonce
+            logger.warning("[wc_store] storeApiNonce not found in homepage HTML for %s", base_url)
+    except Exception as exc:
+        logger.warning("[wc_store] Failed to fetch nonce from %s: %s", base_url, exc)
+    return None
+
+
+def fetch_wc_store_products(base_url: str, cookies: list[dict] | None = None) -> list[dict]:
+    """
+    Fetch all products via WooCommerce Store API.
     Tries /wp-json/wc/store/v1/products first; falls back to the legacy
     /wp-json/wc/store/products path for older WooCommerce Blocks versions.
+
+    When cookies are provided (e.g. from a prior Playwright login), they are
+    forwarded as Cookie + Nonce headers — required for vendors that restrict
+    the Store API to logged-in users (returns 401 without authentication).
+    The nonce (wc_store_api) is extracted from the homepage HTML automatically.
+
     Returns empty list if unavailable.
     """
     _ENDPOINTS = [
@@ -296,11 +335,31 @@ def fetch_wc_store_products(base_url: str) -> list[dict]:
     all_products: list[dict] = []
     page = 1
 
+    req_headers: dict | None = None
+    if cookies:
+        # Pull the nonce stored by playwright_login (if present) before building
+        # the Cookie header — it must not be forwarded as an actual cookie value.
+        nonce_entry = next((c for c in cookies if c.get("name") == "__wc_store_nonce__"), None)
+        nonce = nonce_entry["value"] if nonce_entry else None
+
+        cookie_str = "; ".join(
+            f"{c['name']}={c['value']}"
+            for c in cookies
+            if c.get("name") and c.get("value") and c.get("name") != "__wc_store_nonce__"
+        )
+        if cookie_str:
+            req_headers = {"Cookie": cookie_str}
+            if not nonce:
+                nonce = _fetch_store_api_nonce(base_url, cookie_str)
+            if nonce:
+                req_headers["Nonce"] = nonce
+
     while True:
         try:
             resp = http_get_with_retry(
                 endpoint,
                 params={"per_page": 100, "page": page},
+                headers=req_headers,
                 timeout=30,
             )
             logger.info("[wc_store] GET %s page=%d → HTTP %s", endpoint, page, resp.status_code)

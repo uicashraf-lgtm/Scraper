@@ -211,7 +211,7 @@ def _persist_tags(db, canonical_product_id: int, tags: list[str]):
             ))
 
 
-def _crawl_vendor_via_wc_api(db, vendor: Vendor, base_url_override: str | None = None, use_store_api: bool = False):
+def _crawl_vendor_via_wc_api(db, vendor: Vendor, base_url_override: str | None = None, use_store_api: bool = False, cookies: list[dict] | None = None):
     """Fetch all products via WooCommerce REST API or Store API — no web crawling needed."""
     import json as _json
 
@@ -219,8 +219,8 @@ def _crawl_vendor_via_wc_api(db, vendor: Vendor, base_url_override: str | None =
 
     if use_store_api:
         from app.scraper.wc_api import fetch_wc_store_products, process_wc_store_product
-        logger.info("[crawl_vendor] WC Store API for '%s' (%s)", vendor.name, base_url)
-        products = fetch_wc_store_products(base_url)
+        logger.info("[crawl_vendor] WC Store API for '%s' (%s) auth=%s", vendor.name, base_url, bool(cookies))
+        products = fetch_wc_store_products(base_url, cookies=cookies)
         def _process(prod):
             return process_wc_store_product(prod, base_url=base_url)
     else:
@@ -336,13 +336,21 @@ def crawl_vendor(vendor_id: int):
                 return
             logger.warning("[crawl_vendor] WC REST API failed for '%s' — falling through to next source", vendor.name)
 
-        # Priority 2: Public WooCommerce Store API (no auth needed)
+        # Priority 2: WooCommerce Store API (with session cookies when the endpoint is auth-protected)
         # Use vendor.base_url — wc_api_url may contain a full endpoint path which would
         # cause fetch_wc_store_products to construct a malformed URL.
         store_base = vendor.base_url
         if store_base:
-            logger.info("[crawl_vendor] Source: Public WooCommerce Store API (%s)", store_base)
-            success = _crawl_vendor_via_wc_api(db, vendor, base_url_override=store_base, use_store_api=True)
+            store_cookies = None
+            if vendor.login_email and vendor.login_password_enc:
+                logger.info("[crawl_vendor] Login credentials found for '%s' — fetching session for Store API", vendor.name)
+                store_cookies = _get_or_refresh_session(db, vendor)
+                if store_cookies:
+                    logger.info("[crawl_vendor] Got session for '%s' (%d cookies) — Store API will use auth", vendor.name, len(store_cookies))
+                else:
+                    logger.warning("[crawl_vendor] Could not get session for '%s' — trying Store API unauthenticated", vendor.name)
+            logger.info("[crawl_vendor] Source: WooCommerce Store API (%s)", store_base)
+            success = _crawl_vendor_via_wc_api(db, vendor, base_url_override=store_base, use_store_api=True, cookies=store_cookies)
             if success:
                 return
             logger.warning("[crawl_vendor] WC Store API failed for '%s' — falling through to web crawl", vendor.name)
