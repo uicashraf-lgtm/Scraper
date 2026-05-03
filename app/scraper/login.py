@@ -48,6 +48,38 @@ def _try_selector_list(page, selectors: tuple[str, ...]):
     return None
 
 
+def _find_login_form_inputs(page):
+    """Find email/username and password inputs that belong to the same form.
+
+    Pages that show a login box alongside a register/newsletter box have
+    multiple email inputs. This scans all forms for one that contains a
+    password field, then returns the email/username input within that same
+    form — avoiding accidental fills of signup-only forms.
+
+    Returns (email_el, pass_el) or (None, None) if no login form is found.
+    """
+    try:
+        forms = page.query_selector_all("form")
+        for form in forms:
+            pass_el = form.query_selector("input[type='password']")
+            if not pass_el or not pass_el.is_visible():
+                continue
+            for sel in (
+                "input[name='log']",
+                "input[name='username']",
+                "input[name='email']",
+                "input[type='email']",
+                "input[id='username']",
+                "input[id='email']",
+            ):
+                email_el = form.query_selector(sel)
+                if email_el and email_el.is_visible():
+                    return email_el, pass_el
+    except Exception:
+        pass
+    return None, None
+
+
 def playwright_login(
     base_url: str,
     email: str,
@@ -108,8 +140,12 @@ def playwright_login(
             # Handle pre-login CAPTCHA
             solve_captcha_on_page(page, bypass_strategy)
 
-            email_input = _try_selector_list(page, _EMAIL_SELECTORS)
-            pass_input = _try_selector_list(page, _PASS_SELECTORS)
+            # Prefer a form that contains both an email/username AND a password
+            # field — avoids filling newsletter/register forms that share the page.
+            email_input, pass_input = _find_login_form_inputs(page)
+            if not email_input or not pass_input:
+                email_input = _try_selector_list(page, _EMAIL_SELECTORS)
+                pass_input = _try_selector_list(page, _PASS_SELECTORS)
 
             if not email_input or not pass_input:
                 logger.warning("[login] Login form not found at %s (email_found=%s pass_found=%s)",
@@ -121,7 +157,20 @@ def playwright_login(
             email_input.fill(email)
             pass_input.fill(password)
 
-            submit = _try_selector_list(page, _SUBMIT_SELECTORS)
+            # Look for the submit button inside the same form as the password field
+            form_el = pass_input.evaluate_handle("el => el.closest('form')").as_element()
+            submit = None
+            if form_el:
+                for sel in _SUBMIT_SELECTORS:
+                    try:
+                        el = form_el.query_selector(sel)
+                        if el and el.is_visible():
+                            submit = el
+                            break
+                    except Exception:
+                        continue
+            if not submit:
+                submit = _try_selector_list(page, _SUBMIT_SELECTORS)
             if submit:
                 logger.info("[login] Clicking submit button")
                 try:
