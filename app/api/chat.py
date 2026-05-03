@@ -6,7 +6,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 router = APIRouter()
 
 _connections: dict[WebSocket, str] = {}
-_history: deque = deque(maxlen=3)
+_recent: deque = deque(maxlen=3)
 
 
 def _guest_name() -> str:
@@ -34,16 +34,15 @@ async def chat_ws(websocket: WebSocket):
 
     try:
         await websocket.send_json({"type": "assigned_name", "name": name})
-        if _history:
-            await websocket.send_json({"type": "history", "messages": list(_history)})
+        if _recent:
+            await websocket.send_json({"type": "history", "messages": list(_recent)})
         await _broadcast({"type": "system", "text": f"{name} joined"}, exclude=websocket)
 
         async for data in websocket.iter_json():
             text = str(data.get("text", "")).strip()
             if text and len(text) <= 500:
-                msg = {"type": "message", "name": name, "text": text}
-                _history.append({"name": name, "text": text})
-                await _broadcast(msg)
+                _recent.append({"name": name, "text": text})
+                await _broadcast({"type": "message", "name": name, "text": text})
 
     except WebSocketDisconnect:
         pass
