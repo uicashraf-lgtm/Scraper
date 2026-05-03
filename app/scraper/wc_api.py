@@ -558,9 +558,12 @@ def process_wc_store_product(product: dict, base_url: str | None = None) -> dict
     price = _store_price(prices_obj)
     currency = prices_obj.get("currency_code", "USD")
 
-    # The Store API prices{} object returns the regular_price even when on_sale=True.
-    # Parse the actual discount price from price_html instead.
-    if product.get("on_sale") and product.get("price_html"):
+    # The Store API prices{} object returns the regular_price even when a sale is
+    # active.  Some stores also have on_sale=False despite showing a strikethrough
+    # price (misconfigured WC discount rules), so always check price_html for an
+    # <ins> element and use it whenever present — _sale_price_from_html returns
+    # None if there is no <ins>, so this falls back to the regular price safely.
+    if product.get("price_html"):
         sale_price = _sale_price_from_html(product["price_html"])
         if sale_price is not None:
             price = sale_price
@@ -657,6 +660,24 @@ def process_wc_store_product(product: dict, base_url: str | None = None) -> dict
                         break
                     except ValueError:
                         pass
+
+    # Last-resort fallback: for simple products whose name has no dose unit and
+    # whose description has no "total" pattern, scan short_description then
+    # description for the first plain amount (e.g. "Strength 1MG", "10MG per vial").
+    if amount_mg is None:
+        for field in ("short_description", "description"):
+            raw_html = product.get(field) or ""
+            if not raw_html:
+                continue
+            plain = _HTML_TAG_RE.sub(" ", raw_html)
+            m = _AMOUNT_RE.search(plain)
+            if m:
+                try:
+                    amount_mg, amount_unit = _parse_amount(m.group())
+                    if amount_mg is not None:
+                        break
+                except Exception:
+                    pass
 
     return {
         "url": url,
