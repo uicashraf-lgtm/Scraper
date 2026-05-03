@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.chat import router as chat_router
 from app.api.routes import router
 from app.db.session import engine
 from app.models.entities import Base
@@ -26,3 +27,4 @@ def health():
 
 
 app.include_router(router, prefix="/api")
+app.include_router(chat_router, prefix="/api")
