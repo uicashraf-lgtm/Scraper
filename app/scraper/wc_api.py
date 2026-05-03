@@ -352,18 +352,27 @@ def fetch_wc_store_product_by_url(product_url: str, base_url: str) -> dict | Non
     if not slug:
         return None
 
-    endpoint = base_url.rstrip("/") + "/wp-json/wc/store/v1/products"
-    try:
-        resp = http_get_with_retry(endpoint, params={"slug": slug}, timeout=15, max_retries=2)
-        if resp.status_code != 200:
-            logger.info("[wc_store] single-product fetch %s slug=%s → HTTP %s",
-                        endpoint, slug, resp.status_code)
+    _SLUG_ENDPOINTS = [
+        base_url.rstrip("/") + "/wp-json/wc/store/v1/products",
+        base_url.rstrip("/") + "/wp-json/wc/store/products",
+    ]
+    for endpoint in _SLUG_ENDPOINTS:
+        try:
+            resp = http_get_with_retry(endpoint, params={"slug": slug}, timeout=15, max_retries=2)
+            if resp.status_code == 404 and endpoint == _SLUG_ENDPOINTS[0]:
+                logger.info("[wc_store] single-product v1 not found for %s, trying legacy path", base_url)
+                continue
+            if resp.status_code != 200:
+                logger.info("[wc_store] single-product fetch %s slug=%s → HTTP %s",
+                            endpoint, slug, resp.status_code)
+                return None
+            items = resp.json()
+            if isinstance(items, list) and items:
+                return items[0]
             return None
-        items = resp.json()
-        if isinstance(items, list) and items:
-            return items[0]
-    except Exception as exc:
-        logger.warning("[wc_store] single-product fetch failed for %s: %s", product_url, exc)
+        except Exception as exc:
+            logger.warning("[wc_store] single-product fetch failed for %s: %s", product_url, exc)
+            return None
     return None
 
 
@@ -424,38 +433,49 @@ def _fetch_store_variation_prices(base_url: str, variations: list[dict]) -> list
         vid = var.get("id")
         if not vid:
             continue
-        endpoint = f"{base_url.rstrip('/')}/wp-json/wc/store/v1/products/{vid}"
-        try:
-            resp = http_get_with_retry(endpoint, timeout=15, max_retries=2)
-            if resp.status_code == 200:
-                data = resp.json()
-                p_obj = data.get("prices") or {}
-                minor_unit = p_obj.get("currency_minor_unit", 2)
-                raw = p_obj.get("price") or p_obj.get("regular_price")
-                var_price = None
-                if raw is not None:
-                    try:
-                        var_price = int(raw) / (10 ** minor_unit)
-                    except (ValueError, TypeError):
-                        pass
-                # Per-variation stock from the Store API single-product response
-                var_in_stock: bool | None = None
-                if "is_in_stock" in data:
-                    var_in_stock = bool(data.get("is_in_stock"))
-                elif "is_purchasable" in data:
-                    var_in_stock = bool(data.get("is_purchasable"))
-                results.append({
-                    "id": vid,
-                    "price": var_price,
-                    "in_stock": var_in_stock,
-                    "attributes": var.get("attributes", []),
-                })
-                logger.info("[wc_store] Variation %d → price=%s in_stock=%s", vid, var_price, var_in_stock)
-            else:
-                logger.warning("[wc_store] Variation %d → HTTP %s", vid, resp.status_code)
-            page_delay()
-        except Exception as exc:
-            logger.warning("[wc_store] Failed to fetch variation %d: %s", vid, exc)
+        _var_endpoints = [
+            f"{base_url.rstrip('/')}/wp-json/wc/store/v1/products/{vid}",
+            f"{base_url.rstrip('/')}/wp-json/wc/store/products/{vid}",
+        ]
+        fetched = False
+        for endpoint in _var_endpoints:
+            try:
+                resp = http_get_with_retry(endpoint, timeout=15, max_retries=2)
+                if resp.status_code == 404 and endpoint == _var_endpoints[0]:
+                    logger.info("[wc_store] Variation %d v1 not found, trying legacy path", vid)
+                    continue
+                if resp.status_code == 200:
+                    data = resp.json()
+                    p_obj = data.get("prices") or {}
+                    minor_unit = p_obj.get("currency_minor_unit", 2)
+                    raw = p_obj.get("price") or p_obj.get("regular_price")
+                    var_price = None
+                    if raw is not None:
+                        try:
+                            var_price = int(raw) / (10 ** minor_unit)
+                        except (ValueError, TypeError):
+                            pass
+                    # Per-variation stock from the Store API single-product response
+                    var_in_stock: bool | None = None
+                    if "is_in_stock" in data:
+                        var_in_stock = bool(data.get("is_in_stock"))
+                    elif "is_purchasable" in data:
+                        var_in_stock = bool(data.get("is_purchasable"))
+                    results.append({
+                        "id": vid,
+                        "price": var_price,
+                        "in_stock": var_in_stock,
+                        "attributes": var.get("attributes", []),
+                    })
+                    logger.info("[wc_store] Variation %d → price=%s in_stock=%s", vid, var_price, var_in_stock)
+                    fetched = True
+                else:
+                    logger.warning("[wc_store] Variation %d → HTTP %s", vid, resp.status_code)
+                break
+            except Exception as exc:
+                logger.warning("[wc_store] Failed to fetch variation %d: %s", vid, exc)
+                break
+        page_delay()
     return results
 
 
