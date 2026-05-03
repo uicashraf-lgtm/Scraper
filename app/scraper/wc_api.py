@@ -281,11 +281,16 @@ def process_wc_product(
 
 # ─── WooCommerce Store API (public, no auth) ──────────────────────────────────
 
-def fetch_wc_store_products(base_url: str) -> list[dict]:
+def fetch_wc_store_products(base_url: str, cookies: list[dict] | None = None) -> list[dict]:
     """
-    Fetch all products via WooCommerce Store API (public, no authentication).
+    Fetch all products via WooCommerce Store API.
     Tries /wp-json/wc/store/v1/products first; falls back to the legacy
     /wp-json/wc/store/products path for older WooCommerce Blocks versions.
+
+    When cookies are provided (e.g. from a prior Playwright login), they are
+    forwarded as a Cookie header — required for vendors that restrict the Store
+    API to logged-in users (e.g. returns 401 without authentication).
+
     Returns empty list if unavailable.
     """
     _ENDPOINTS = [
@@ -296,11 +301,20 @@ def fetch_wc_store_products(base_url: str) -> list[dict]:
     all_products: list[dict] = []
     page = 1
 
+    req_headers: dict | None = None
+    if cookies:
+        cookie_str = "; ".join(
+            f"{c['name']}={c['value']}" for c in cookies if c.get("name") and c.get("value")
+        )
+        if cookie_str:
+            req_headers = {"Cookie": cookie_str}
+
     while True:
         try:
             resp = http_get_with_retry(
                 endpoint,
                 params={"per_page": 100, "page": page},
+                headers=req_headers,
                 timeout=30,
             )
             logger.info("[wc_store] GET %s page=%d → HTTP %s", endpoint, page, resp.status_code)
