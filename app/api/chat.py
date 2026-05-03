@@ -34,11 +34,23 @@ async def chat_ws(websocket: WebSocket):
 
     try:
         await websocket.send_json({"type": "assigned_name", "name": name})
+
         if _recent:
             await websocket.send_json({"type": "history", "messages": list(_recent)})
+
         await _broadcast({"type": "system", "text": f"{name} joined"}, exclude=websocket)
 
         async for data in websocket.iter_json():
+            if data.get("type") == "set_name":
+                new_name = str(data.get("name", "")).strip()[:30]
+                if new_name and new_name != name:
+                    old_name = name
+                    name = new_name
+                    _connections[websocket] = name
+                    await websocket.send_json({"type": "name_changed", "name": name})
+                    await _broadcast({"type": "system", "text": f"{old_name} is now known as {name}"}, exclude=websocket)
+                continue
+
             text = str(data.get("text", "")).strip()
             if text and len(text) <= 500:
                 _recent.append({"name": name, "text": text})
