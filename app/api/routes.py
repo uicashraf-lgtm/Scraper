@@ -846,14 +846,19 @@ def list_all_products(db: Session = Depends(get_db)):
                 lv_stock_map[key] = lv.in_stock
 
             labels: list[str] = []
-            # When dose_locked, the admin has overridden the dosage —
-            # use amount_mg directly so stale variant_amounts can't
-            # keep the listing grouped under the old scraped dose.
+            # When dose_locked, the admin has overridden the listing-level dose —
+            # always include amount_mg so stale variant_amounts can't keep the
+            # listing grouped under an old scraped dose.
             if l.dose_locked and l.amount_mg is not None:
                 unit = (l.amount_unit or "mg").lower()
                 amt = l.amount_mg
                 labels.append(f"{int(amt)} {unit}" if amt == int(amt) else f"{amt} {unit}")
-            elif lv_list:
+            # Real per-variant rows are authoritative for dose grouping. Render
+            # them alongside amount_mg so multi-dose listings (e.g. a vendor
+            # selling 10mg + 20mg blends) stay visible after admin edits one
+            # dose. dosage_map dedupes on the normalised label, so an amount_mg
+            # matching a variant collapses to one card.
+            if lv_list:
                 # Real per-variant rows exist — render exactly those, ignoring
                 # variant_amounts. Page attribute terms (e.g. genpeptide listing
                 # 10/15 mg as terms but only selling 6/12/24/30/48/50) leak
@@ -862,7 +867,7 @@ def list_all_products(db: Session = Depends(get_db)):
                     amt = lv.dosage
                     unit = (lv.unit or "mg").lower()
                     labels.append(f"{int(amt)} {unit}" if amt == int(amt) else f"{amt} {unit}")
-            elif l.variant_amounts:
+            elif not labels and l.variant_amounts:
                 try:
                     for raw_d in _json.loads(l.variant_amounts):
                         s = str(raw_d)
@@ -1012,7 +1017,20 @@ def product_prices(product_id: int, db: Session = Depends(get_db)):
         base = _effective_price_payload(db, l, v, product.name)
         variants = base.get("variants") or []
         if variants:
+            # When dose_locked, also emit an entry for the listing-level
+            # amount_mg so it shows up alongside the variant rows in the admin
+            # UI (otherwise editing one dose hides the listing-level dose from
+            # the editable list).
+            emitted_doses: set[float] = set()
+            if l.dose_locked and l.amount_mg is not None:
+                entry = dict(base)
+                entry["amount_mg"] = l.amount_mg
+                entry["amount_unit"] = l.amount_unit or "mg"
+                result.append(entry)
+                emitted_doses.add(float(l.amount_mg))
             for var in variants:
+                if float(var["dosage"]) in emitted_doses:
+                    continue
                 entry = dict(base)
                 entry["amount_mg"] = var["dosage"]
                 entry["amount_unit"] = var.get("unit") or "mg"
@@ -1285,6 +1303,7 @@ def patch_listing(listing_id: int, payload: ListingPatch, db: Session = Depends(
         # dose_locked is reserved for the listing-level single-dose path below.
     else:
         if payload.amount_mg is not None:
+            old_amount = listing.amount_mg
             listing.amount_mg = payload.amount_mg
             listing.dose_locked = True
             if listing.last_price and payload.amount_mg > 0:
@@ -1295,13 +1314,14 @@ def patch_listing(listing_id: int, payload: ListingPatch, db: Session = Depends(
             amt = payload.amount_mg
             lbl = f"{int(amt)} {unit}" if amt == int(amt) else f"{amt} {unit}"
             listing.variant_amounts = _json.dumps([lbl])
-            # Drop stale per-dose variant rows so other endpoints don't surface
-            # the pre-override doses (e.g. listing previously had 10mg/20mg
-            # variants, now locked to 5mg).
-            db.query(ListingVariant).filter(
-                ListingVariant.listing_id == listing_id,
-                ListingVariant.dosage != payload.amount_mg,
-            ).delete(synchronize_session=False)
+            # Drop only the variant row matching the OLD listing-level dose
+            # (the one being replaced). Sibling variants on multi-dose listings
+            # must survive — they represent other SKUs the vendor sells.
+            if old_amount is not None and abs(old_amount - payload.amount_mg) > 1e-9:
+                db.query(ListingVariant).filter(
+                    ListingVariant.listing_id == listing_id,
+                    ListingVariant.dosage == old_amount,
+                ).delete(synchronize_session=False)
         if payload.amount_unit is not None:
             listing.amount_unit = payload.amount_unit
             listing.dose_locked = True
